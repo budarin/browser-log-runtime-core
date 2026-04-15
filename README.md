@@ -15,28 +15,62 @@
 pnpm add @budarin/browser-log-runtime-core
 ```
 
-## Inline entrypoint
+## Root runtime API
 
-Для inline runtime-сценариев (например, splash/update-host) используйте узкий entrypoint.
-Он экспортирует только минимальный runtime API, чтобы уменьшить размер встроенного кода.
+Основной entrypoint `@budarin/browser-log-runtime-core` остаётся совместимым и экспортирует:
 
 ```ts
 import {
     attachGlobalErrorHooks,
     attachPagehideFlush,
     createBufferedLogger,
-} from '@budarin/browser-log-runtime-core/inline';
+    normalizeDetails,
+    normalizeMessage,
+    serializeUnknown,
+} from '@budarin/browser-log-runtime-core';
 ```
 
-## Что экспортируется
+## Inline runtime (size-optimized)
 
-- `LogLevel`
-- `createBufferedLogger(transport, policy)`
-- `attachGlobalErrorHooks(options)`
-- `attachPagehideFlush(flushOnLeave)`
-- `normalizeMessage(value, fallback)`
-- `normalizeDetails(value)`
-- `serializeUnknown(value)`
+Для inline runtime-сценариев (splash/update-host) используйте отдельный lightweight entrypoint:
+
+```ts
+import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
+```
+
+Этот entrypoint не реэкспортирует root helpers и содержит узкую специализированную реализацию,
+чтобы уменьшить итоговый bundle dependency graph для inline-кода.
+
+### API `createInlineLogger(options)`
+
+`options`:
+
+- `send(entries, keepalive): Promise<boolean>`
+- `defaultMessage: string`
+- `isInfoEnabled: boolean`
+- `appVersion?: string`
+- `source?: string`
+- `batchSize?: number` (default `32`)
+- `maxQueueSize?: number` (default `1000`)
+
+Возвращаемый logger:
+
+- `info(message?, details?)`
+- `warn(message?, details?)`
+- `error(message?, details?)`
+- `flush(keepalive?: boolean)`
+- `flushOnLeave()`
+- `attachGlobalErrorHandlers({ onError?, onUnhandledRejection? }) -> detach`
+- `attachPagehideFlush() -> detach`
+- `dispose()`
+
+### Поведение inline logger
+
+- `info` учитывает `isInfoEnabled`;
+- очередь ограничивается `maxQueueSize` (удаляются самые старые записи);
+- `flush` отправляет батчи в цикле до первой неуспешной отправки;
+- `flushOnLeave` вызывает отправку с `keepalive = true`;
+- `attach`/`detach`/`dispose` безопасны и идемпотентны.
 
 ## Основные типы
 
@@ -87,7 +121,7 @@ export type GlobalErrorPayload = {
 };
 ```
 
-## Контракт `createBufferedLogger`
+## Контракт `createBufferedLogger` (root)
 
 ### `transport(entries, keepalive)`
 
@@ -116,7 +150,7 @@ export type GlobalErrorPayload = {
 - `flushOnLeave()` эквивалентен `flush({ keepalive: true })`;
 - `dispose()` очищает очередь и отключает логгер.
 
-## Контракт `attachGlobalErrorHooks`
+## Контракт `attachGlobalErrorHooks` (root)
 
 `attachGlobalErrorHooks(options)` подписывает глобальные события:
 
@@ -131,7 +165,7 @@ export type GlobalErrorPayload = {
 
 Функция возвращает `detach()`, который снимает обе подписки.
 
-## Контракт `attachPagehideFlush`
+## Контракт `attachPagehideFlush` (root)
 
 `attachPagehideFlush(flushOnLeave)`:
 
@@ -139,17 +173,13 @@ export type GlobalErrorPayload = {
 - при событии вызывает `flushOnLeave`;
 - возвращает `detach()`.
 
-## Пример: inline-host (splash/update-splash)
+## Пример: inline-host (splash/update-host)
 
 ```ts
-import {
-    attachGlobalErrorHooks,
-    attachPagehideFlush,
-    createBufferedLogger,
-} from '@budarin/browser-log-runtime-core/inline';
+import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 
-const logger = createBufferedLogger(
-    async (entries, keepalive) => {
+const logger = createInlineLogger({
+    send: async (entries, keepalive) => {
         const response = await fetch('/api/log', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -163,18 +193,16 @@ const logger = createBufferedLogger(
 
         return response.ok;
     },
-    {
-        defaultMessage: 'runtime event',
-        isInfoEnabled: true,
-        appVersion: '1.0.0',
-        source: 'update-sw-splash-host',
-        batchSize: 32,
-        maxQueueSize: 1000,
-    }
-);
+    defaultMessage: 'runtime event',
+    isInfoEnabled: true,
+    appVersion: '1.0.0',
+    source: 'update-sw-splash-host',
+    batchSize: 32,
+    maxQueueSize: 1000,
+});
 
-const detachPagehide = attachPagehideFlush(logger.flushOnLeave);
-const detachErrors = attachGlobalErrorHooks({
+const detachPagehide = logger.attachPagehideFlush();
+const detachErrors = logger.attachGlobalErrorHandlers({
     onError(payload) {
         logger.error('[runtime] global error', payload);
     },
@@ -189,9 +217,3 @@ function teardownRuntime(): void {
     logger.dispose();
 }
 ```
-
-## Utility функции
-
-- `normalizeMessage(value, fallback)` — приводит `unknown` к строке;
-- `normalizeDetails(value)` — приводит `details` к `readonly unknown[]`;
-- `serializeUnknown(value)` — безопасная сериализация значения (в том числе `Error`).
