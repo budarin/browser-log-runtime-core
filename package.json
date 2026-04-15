@@ -1,0 +1,41 @@
+{
+    "name": "@budarin/browser-log-runtime-core",
+    "version": "0.1.0",
+    "description": "Browser runtime core for buffered logging and global error hooks",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "sideEffects": false,
+    "publishConfig": {
+        "access": "public"
+    },
+    "keywords": [
+        "browser",
+        "logging",
+        "runtime",
+        "splash",
+        "error-handling"
+    ],
+    "author": "Vadim Budarin",
+    "license": "MIT",
+    "devDependencies": {
+        "typescript": "^6.0.2"
+    },
+    "scripts": {
+        "build": "tsc",
+        "type-check": "tsc -b -noEmit",
+        "clear-caches": "sh scripts/clear-caches.sh",
+        "pnpm-install": "pnpm install",
+        "upgrade-deps": "sh scripts/upgrade-deps.sh",
+        "publish-package": "pnpm build && pnpm publish --access=public"
+    }
+}
