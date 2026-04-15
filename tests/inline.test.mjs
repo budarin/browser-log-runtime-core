@@ -161,3 +161,31 @@ test('global handlers attach and detach safely', async () => {
     logger.dispose();
     restoreGlobals();
 });
+
+test('dispose detaches registered listeners', async () => {
+    const restoreGlobals = withGlobalEventTarget();
+    let sendCalls = 0;
+    const logger = createInlineLogger({
+        send: async () => {
+            sendCalls += 1;
+            return false;
+        },
+        defaultMessage: 'fallback',
+        isInfoEnabled: true,
+    });
+
+    logger.warn('before listeners');
+    await delay(0);
+
+    logger.attachPagehideFlush();
+    logger.attachGlobalErrorHandlers();
+
+    logger.dispose();
+
+    globalThis.dispatchEvent(new Event('pagehide'));
+    globalThis.dispatchEvent(new Event('error'));
+
+    await delay(0);
+    assert.equal(sendCalls, 1);
+    restoreGlobals();
+});

@@ -49,14 +49,7 @@ export type InlineLogger = {
     dispose: () => void;
 };
 
-function resolvePositiveInt(value: number | undefined, fallback: number): number {
-    if (value === undefined || globalThis.Number.isInteger(value) === false || value <= 0) {
-        return fallback;
-    }
-    return value;
-}
-
-function toStringSafe(value: unknown): string {
+function stringify(value: unknown): string {
     try {
         return globalThis.String(value);
     } catch {
@@ -64,7 +57,7 @@ function toStringSafe(value: unknown): string {
     }
 }
 
-function toMessage(value: unknown, fallback: string): string {
+function normalizeMessage(value: unknown, fallback: string): string {
     if (typeof value === 'string') {
         return value.length > 0 ? value : fallback;
     }
@@ -74,25 +67,27 @@ function toMessage(value: unknown, fallback: string): string {
     if (value === null || value === undefined) {
         return fallback;
     }
-    const text = toStringSafe(value);
+    const text = stringify(value);
     return text.length > 0 ? text : fallback;
 }
 
-function normalizeError(error: Error): InlineGlobalErrorPayload {
+function serializeError(error: Error): { readonly message: string; readonly name: string; readonly stack?: string } {
+    const message = normalizeMessage(error.message, 'runtime error');
+    const name = normalizeMessage(error.name, 'Error');
     if (typeof error.stack === 'string' && error.stack.length > 0) {
         return {
-            message: toMessage(error.message, 'runtime error'),
-            raw: error,
+            message,
+            name,
             stack: error.stack,
         };
     }
     return {
-        message: toMessage(error.message, 'runtime error'),
-        raw: error,
+        message,
+        name,
     };
 }
 
-function normalizeDetailValue(value: unknown): unknown {
+function serializeDetail(value: unknown): unknown {
     if (
         value === null ||
         value === undefined ||
@@ -106,16 +101,9 @@ function normalizeDetailValue(value: unknown): unknown {
         return value.toString();
     }
     if (value instanceof globalThis.Error) {
-        return normalizeError(value);
+        return serializeError(value);
     }
-    if (typeof value === 'object') {
-        const out: Record<string, unknown> = {};
-        for (const [key, field] of globalThis.Object.entries(value)) {
-            out[key] = normalizeDetailValue(field);
-        }
-        return out;
-    }
-    const text = toStringSafe(value);
+    const text = stringify(value);
     return text.length > 0 ? text : '[unserializable]';
 }
 
@@ -124,38 +112,49 @@ function normalizeDetails(details: unknown): readonly unknown[] {
         return [];
     }
     if (globalThis.Array.isArray(details)) {
-        return details.map((item) => normalizeDetailValue(item));
+        return details.map((item) => serializeDetail(item));
     }
-    return [normalizeDetailValue(details)];
+    return [serializeDetail(details)];
 }
 
 function toErrorPayload(raw: unknown, fallback: string): InlineGlobalErrorPayload {
     if (raw instanceof globalThis.Error) {
-        const payload = normalizeError(raw);
-        if (typeof payload.stack === 'string' && payload.stack.length > 0) {
+        const message = normalizeMessage(raw.message, fallback);
+        if (typeof raw.stack === 'string' && raw.stack.length > 0) {
             return {
-                message: toMessage(payload.message, fallback),
-                raw: payload.raw,
-                stack: payload.stack,
+                message,
+                raw,
+                stack: raw.stack,
             };
         }
         return {
-            message: toMessage(payload.message, fallback),
-            raw: payload.raw,
+            message,
+            raw,
         };
     }
     return {
-        message: toMessage(raw, fallback),
+        message: normalizeMessage(raw, fallback),
         raw,
     };
 }
 
 export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
-    const maxQueueSize = resolvePositiveInt(options.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
-    const batchSize = resolvePositiveInt(options.batchSize, DEFAULT_BATCH_SIZE);
+    const maxQueueSize =
+        options.maxQueueSize !== undefined &&
+        globalThis.Number.isInteger(options.maxQueueSize) &&
+        options.maxQueueSize > 0
+            ? options.maxQueueSize
+            : DEFAULT_MAX_QUEUE_SIZE;
+    const batchSize =
+        options.batchSize !== undefined &&
+        globalThis.Number.isInteger(options.batchSize) &&
+        options.batchSize > 0
+            ? options.batchSize
+            : DEFAULT_BATCH_SIZE;
 
     const queue: InlineLogEntry[] = [];
-    const detachSet = new Set<() => void>();
+    let detachPagehide: (() => void) | undefined;
+    let detachGlobalErrors: (() => void) | undefined;
 
     let isDisposed = false;
     let isFlushing = false;
@@ -167,23 +166,24 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
     }
 
     function makeEntry(level: InlineLogLevel, message: unknown, details: unknown): InlineLogEntry {
-        let entry: InlineLogEntry = {
+        const entry: {
+            args: readonly unknown[];
+            level: InlineLogLevel;
+            message: string;
+            timestampMs: number;
+            appVersion?: string;
+            source?: string;
+        } = {
             level,
-            message: toMessage(message, options.defaultMessage),
+            message: normalizeMessage(message, options.defaultMessage),
             args: normalizeDetails(details),
             timestampMs: globalThis.Date.now(),
         };
         if (typeof options.appVersion === 'string' && options.appVersion.length > 0) {
-            entry = {
-                ...entry,
-                appVersion: options.appVersion,
-            };
+            entry.appVersion = options.appVersion;
         }
         if (typeof options.source === 'string' && options.source.length > 0) {
-            entry = {
-                ...entry,
-                source: options.source,
-            };
+            entry.source = options.source;
         }
         return entry;
     }
@@ -231,30 +231,38 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
             return () => undefined;
         }
 
+        if (detachPagehide !== undefined) {
+            return detachPagehide;
+        }
+
         let detached = false;
         const onPagehide = (): void => {
             flushOnLeave();
         };
 
-        const detach = (): void => {
+        const detachLocal = (): void => {
             if (detached) {
                 return;
             }
             detached = true;
-            detachSet.delete(detach);
+            detachPagehide = undefined;
             if (typeof globalThis.removeEventListener === 'function') {
                 globalThis.removeEventListener('pagehide', onPagehide, { capture: true });
             }
         };
 
         globalThis.addEventListener('pagehide', onPagehide, { capture: true });
-        detachSet.add(detach);
-        return detach;
+        detachPagehide = detachLocal;
+        return detachLocal;
     }
 
     function attachGlobalErrorHandlers(handlers?: InlineErrorHandlers): () => void {
         if (isDisposed || typeof globalThis.addEventListener !== 'function') {
             return () => undefined;
+        }
+
+        if (detachGlobalErrors !== undefined) {
+            return detachGlobalErrors;
         }
 
         let detached = false;
@@ -267,33 +275,26 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
             });
 
         const onRuntimeError: EventListener = (event): void => {
-            let raw: unknown = event;
-            let fallback = 'runtime error';
-            if ('error' in event && event.error !== undefined) {
-                raw = event.error;
-            } else if ('message' in event && typeof event.message === 'string') {
-                raw = event.message;
-            }
-            if ('message' in event && typeof event.message === 'string' && event.message.length > 0) {
-                fallback = event.message;
-            }
-            onError(toErrorPayload(raw, fallback));
+            const raw =
+                'error' in event && event.error !== undefined
+                    ? event.error
+                    : 'message' in event
+                      ? event.message
+                      : event;
+            onError(toErrorPayload(raw, 'runtime error'));
         };
 
         const onUnhandledRejection: EventListener = (event): void => {
-            let reason: unknown = event;
-            if ('reason' in event) {
-                reason = event.reason;
-            }
+            const reason = 'reason' in event ? event.reason : event;
             onUnhandled(toErrorPayload(reason, 'unhandled rejection'));
         };
 
-        const detach = (): void => {
+        const detachLocal = (): void => {
             if (detached) {
                 return;
             }
             detached = true;
-            detachSet.delete(detach);
+            detachGlobalErrors = undefined;
             if (typeof globalThis.removeEventListener === 'function') {
                 globalThis.removeEventListener('error', onRuntimeError);
                 globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
@@ -302,8 +303,8 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
 
         globalThis.addEventListener('error', onRuntimeError);
         globalThis.addEventListener('unhandledrejection', onUnhandledRejection);
-        detachSet.add(detach);
-        return detach;
+        detachGlobalErrors = detachLocal;
+        return detachLocal;
     }
 
     function dispose(): void {
@@ -311,10 +312,17 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
             return;
         }
         isDisposed = true;
-        for (const detach of detachSet) {
-            detach();
+
+        if (detachPagehide !== undefined) {
+            detachPagehide();
         }
-        detachSet.clear();
+
+        if (detachGlobalErrors !== undefined) {
+            detachGlobalErrors();
+        }
+
+        detachPagehide = undefined;
+        detachGlobalErrors = undefined;
         queue.splice(0, queue.length);
     }
 

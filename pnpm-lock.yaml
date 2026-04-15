@@ -4,9 +4,16 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@budarin/browser-log-runtime-core': 'link:'
+
 importers:
 
   .:
+    dependencies:
+      '@budarin/browser-log-runtime-core':
+        specifier: 'link:'
+        version: 'link:'
     devDependencies:
       typescript:
         specifier: ^6.0.2
