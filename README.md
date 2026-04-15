@@ -15,6 +15,19 @@
 pnpm add @budarin/browser-log-runtime-core
 ```
 
+## Inline entrypoint
+
+Для inline runtime-сценариев (например, splash/update-host) используйте узкий entrypoint.
+Он экспортирует только минимальный runtime API, чтобы уменьшить размер встроенного кода.
+
+```ts
+import {
+    attachGlobalErrorHooks,
+    attachPagehideFlush,
+    createBufferedLogger,
+} from '@budarin/browser-log-runtime-core/inline';
+```
+
 ## Что экспортируется
 
 - `LogLevel`
@@ -133,7 +146,7 @@ import {
     attachGlobalErrorHooks,
     attachPagehideFlush,
     createBufferedLogger,
-} from '@budarin/browser-log-runtime-core';
+} from '@budarin/browser-log-runtime-core/inline';
 
 const logger = createBufferedLogger(
     async (entries, keepalive) => {
