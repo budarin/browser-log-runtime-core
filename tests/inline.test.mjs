@@ -34,7 +34,6 @@ test('queue trim keeps the newest entries', async () => {
             sentBatches.push(entries.map((entry) => entry.message));
             return false;
         },
-        defaultMessage: 'fallback',
         enableLogging: true,
         maxQueueSize: 2,
         batchSize: 10,
@@ -58,7 +57,6 @@ test('info is skipped when disabled', async () => {
             sendCalls += 1;
             return true;
         },
-        defaultMessage: 'fallback',
         enableLogging: false,
     });
 
@@ -75,7 +73,6 @@ test('info is skipped by default when enableLogging omitted', async () => {
             sendCalls += 1;
             return true;
         },
-        defaultMessage: 'fallback',
     });
 
     logger.info('hidden by default');
@@ -93,7 +90,6 @@ test('failed send keeps queue for next flush', async () => {
             callIndex += 1;
             return callIndex > 1;
         },
-        defaultMessage: 'fallback',
         enableLogging: true,
         batchSize: 10,
     });
@@ -116,7 +112,6 @@ test('pagehide triggers keepalive flush', async () => {
             keepaliveValues.push(keepalive);
             return keepalive;
         },
-        defaultMessage: 'fallback',
         enableLogging: true,
     });
 
@@ -139,7 +134,6 @@ test('global handlers attach and detach safely', async () => {
     const restoreGlobals = withGlobalEventTarget();
     const logger = createInlineLogger({
         send: async () => true,
-        defaultMessage: 'fallback',
         enableLogging: true,
     });
 
@@ -186,7 +180,6 @@ test('dispose detaches registered listeners', async () => {
             sendCalls += 1;
             return false;
         },
-        defaultMessage: 'fallback',
         enableLogging: true,
     });
 

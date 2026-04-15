@@ -1,7 +1,7 @@
 import type { FlushOptions, LogEntry, LoggerPolicy, LogTransport, RuntimeLogger } from './types.js';
 
 import { LogLevel } from './types.js';
-import { normalizeDetails, normalizeMessage } from './normalize.js';
+import { normalizeDetails } from './normalize.js';
 
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
 const DEFAULT_BATCH_SIZE = 32;
@@ -28,7 +28,6 @@ function appendAppVersion(entry: LogEntry, appVersion: string): LogEntry {
 export function createBufferedLogger(transport: LogTransport, policy: LoggerPolicy): RuntimeLogger {
     const maxQueueSize = resolvePositiveInt(policy.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
     const batchSize = resolvePositiveInt(policy.batchSize, DEFAULT_BATCH_SIZE);
-    const defaultMessage = policy.defaultMessage;
     const appVersion = policy.appVersion;
 
     const queue: LogEntry[] = [];
@@ -43,11 +42,11 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
         queue.splice(0, queue.length - maxQueueSize);
     }
 
-    function createEntry(level: LogLevel, message: unknown, details: unknown): LogEntry {
+    function createEntry(level: LogLevel, message: string, details: unknown): LogEntry {
         const base: LogEntry = {
             args: normalizeDetails(details),
             level,
-            message: normalizeMessage(message, defaultMessage),
+            message,
             timestampMs: globalThis.Date.now(),
         };
 
@@ -79,7 +78,7 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
         }
     }
 
-    function push(level: LogLevel, message: unknown, details: unknown): void {
+    function push(level: LogLevel, message: string, details: unknown): void {
         if (isDisposed) {
             return;
         }

@@ -18,7 +18,6 @@ export type InlineLoggerSend = (
 
 export type InlineLoggerOptions = {
     send: InlineLoggerSend;
-    defaultMessage: string;
     enableLogging?: boolean;
     appVersion?: string;
     batchSize?: number;
@@ -37,9 +36,9 @@ export type InlineErrorHandlers = {
 };
 
 export type InlineLogger = {
-    info: (message?: unknown, details?: unknown) => void;
-    warn: (message?: unknown, details?: unknown) => void;
-    error: (message?: unknown, details?: unknown) => void;
+    info: (message: string, details?: unknown) => void;
+    warn: (message: string, details?: unknown) => void;
+    error: (message: string, details?: unknown) => void;
     flush: (keepalive?: boolean) => Promise<void>;
     flushOnLeave: () => void;
     attachGlobalErrorHandlers: (handlers?: InlineErrorHandlers) => () => void;
@@ -55,23 +54,9 @@ function stringify(value: unknown): string {
     }
 }
 
-function normalizeMessage(value: unknown, fallback: string): string {
-    if (typeof value === 'string') {
-        return value.length > 0 ? value : fallback;
-    }
-    if (value instanceof globalThis.Error) {
-        return value.message.length > 0 ? value.message : fallback;
-    }
-    if (value === null || value === undefined) {
-        return fallback;
-    }
-    const text = stringify(value);
-    return text.length > 0 ? text : fallback;
-}
-
 function serializeError(error: Error): { message: string; name: string; stack?: string } {
-    const message = normalizeMessage(error.message, 'runtime error');
-    const name = normalizeMessage(error.name, 'Error');
+    const message = error.message.length > 0 ? error.message : 'runtime error';
+    const name = error.name.length > 0 ? error.name : 'Error';
     if (typeof error.stack === 'string' && error.stack.length > 0) {
         return {
             message,
@@ -117,7 +102,7 @@ function normalizeDetails(details: unknown): unknown[] {
 
 function toErrorPayload(raw: unknown, fallback: string): InlineGlobalErrorPayload {
     if (raw instanceof globalThis.Error) {
-        const message = normalizeMessage(raw.message, fallback);
+        const message = raw.message.length > 0 ? raw.message : fallback;
         if (typeof raw.stack === 'string' && raw.stack.length > 0) {
             return {
                 message,
@@ -130,8 +115,15 @@ function toErrorPayload(raw: unknown, fallback: string): InlineGlobalErrorPayloa
             raw,
         };
     }
+    if (typeof raw === 'string' && raw.length > 0) {
+        return {
+            message: raw,
+            raw,
+        };
+    }
+    const text = stringify(raw);
     return {
-        message: normalizeMessage(raw, fallback),
+        message: text.length > 0 ? text : fallback,
         raw,
     };
 }
@@ -163,7 +155,7 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         }
     }
 
-    function makeEntry(level: InlineLogLevel, message: unknown, details: unknown): InlineLogEntry {
+    function makeEntry(level: InlineLogLevel, message: string, details: unknown): InlineLogEntry {
         const entry: {
             args: unknown[];
             level: InlineLogLevel;
@@ -172,7 +164,7 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
             appVersion?: string;
         } = {
             level,
-            message: normalizeMessage(message, options.defaultMessage),
+            message,
             args: normalizeDetails(details),
             timestampMs: globalThis.Date.now(),
         };
@@ -202,7 +194,7 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         }
     }
 
-    function push(level: InlineLogLevel, message: unknown, details: unknown): void {
+    function push(level: InlineLogLevel, message: string, details: unknown): void {
         if (isDisposed) {
             return;
         }

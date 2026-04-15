@@ -46,7 +46,6 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 `options`:
 
 - `send(entries, keepalive): Promise<boolean>`
-- `defaultMessage: string`
 - `enableLogging?: boolean` (default `false`)
 - `appVersion?: string`
 - `batchSize?: number` (default `32`)
@@ -95,7 +94,6 @@ export type LogTransport = (
 ) => Promise<boolean>;
 
 export type LoggerPolicy = {
-    readonly defaultMessage: string;
     readonly enableLogging?: boolean;
     readonly appVersion?: string;
     readonly batchSize?: number;
@@ -103,9 +101,9 @@ export type LoggerPolicy = {
 };
 
 export type RuntimeLogger = {
-    info: (message?: unknown, details?: unknown) => void;
-    warn: (message?: unknown, details?: unknown) => void;
-    error: (message?: unknown, details?: unknown) => void;
+    info: (message: string, details?: unknown) => void;
+    warn: (message: string, details?: unknown) => void;
+    error: (message: string, details?: unknown) => void;
     flush: (options?: { readonly keepalive?: boolean }) => Promise<void>;
     flushOnLeave: () => void;
     dispose: () => void;
@@ -131,7 +129,6 @@ export type GlobalErrorPayload = {
 
 | Поле | Обязательное | Значение |
 | --- | --- | --- |
-| `defaultMessage` | да | fallback текста сообщения |
 | `enableLogging` | нет | включать ли `info` логи (`false` по умолчанию) |
 | `appVersion` | нет | если непустая строка, добавляется в `LogEntry` |
 | `batchSize` | нет | размер батча, по умолчанию `32` |
@@ -189,7 +186,6 @@ const logger = createInlineLogger({
 
         return response.ok;
     },
-    defaultMessage: 'runtime event',
     enableLogging: true,
     appVersion: '1.0.0',
     batchSize: 32,

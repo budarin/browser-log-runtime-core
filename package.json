@@ -1,6 +1,6 @@
 {
     "name": "@budarin/browser-log-runtime-core",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "description": "Browser runtime core for buffered logging and global error hooks",
     "type": "module",
     "main": "./dist/index.js",

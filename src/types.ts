@@ -20,7 +20,6 @@ export type LogTransport = (
 ) => Promise<boolean>;
 
 export type LoggerPolicy = {
-    readonly defaultMessage: string;
     readonly enableLogging?: boolean;
     readonly appVersion?: string;
     readonly batchSize?: number;
@@ -32,9 +31,9 @@ export type FlushOptions = {
 };
 
 export type RuntimeLogger = {
-    info: (message?: unknown, details?: unknown) => void;
-    warn: (message?: unknown, details?: unknown) => void;
-    error: (message?: unknown, details?: unknown) => void;
+    info: (message: string, details?: unknown) => void;
+    warn: (message: string, details?: unknown) => void;
+    error: (message: string, details?: unknown) => void;
     flush: (options?: FlushOptions) => Promise<void>;
     flushOnLeave: () => void;
     dispose: () => void;
