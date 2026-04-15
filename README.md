@@ -47,9 +47,8 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 
 - `send(entries, keepalive): Promise<boolean>`
 - `defaultMessage: string`
-- `isInfoEnabled: boolean`
+- `enableLogging?: boolean` (default `false`)
 - `appVersion?: string`
-- `source?: string`
 - `batchSize?: number` (default `32`)
 - `maxQueueSize?: number` (default `1000`)
 
@@ -66,7 +65,7 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 
 ### Поведение inline logger
 
-- `info` учитывает `isInfoEnabled`;
+- `info` включен только когда `enableLogging === true`;
 - очередь ограничивается `maxQueueSize` (удаляются самые старые записи);
 - `flush` отправляет батчи в цикле до первой неуспешной отправки;
 - `flushOnLeave` вызывает отправку с `keepalive = true`;
@@ -88,7 +87,6 @@ export type LogEntry = {
     readonly message: string;
     readonly timestampMs: number;
     readonly appVersion?: string;
-    readonly source?: string;
 };
 
 export type LogTransport = (
@@ -98,11 +96,10 @@ export type LogTransport = (
 
 export type LoggerPolicy = {
     readonly defaultMessage: string;
-    readonly isInfoEnabled: boolean;
+    readonly enableLogging?: boolean;
     readonly appVersion?: string;
     readonly batchSize?: number;
     readonly maxQueueSize?: number;
-    readonly source?: string;
 };
 
 export type RuntimeLogger = {
@@ -135,16 +132,15 @@ export type GlobalErrorPayload = {
 | Поле | Обязательное | Значение |
 | --- | --- | --- |
 | `defaultMessage` | да | fallback текста сообщения |
-| `isInfoEnabled` | да | включать ли `info` логи |
+| `enableLogging` | нет | включать ли `info` логи (`false` по умолчанию) |
 | `appVersion` | нет | если непустая строка, добавляется в `LogEntry` |
-| `source` | нет | если непустая строка, добавляется в `LogEntry` |
 | `batchSize` | нет | размер батча, по умолчанию `32` |
 | `maxQueueSize` | нет | лимит очереди, по умолчанию `1000` |
 
 ### Поведение `RuntimeLogger`
 
 - `info/warn/error` добавляют запись в очередь;
-- `info` игнорируется, если `isInfoEnabled === false`;
+- `info` игнорируется, если `enableLogging !== true`;
 - при переполнении очередь обрезается до `maxQueueSize` (удаляются самые старые);
 - `flush()` отправляет накопленное через `transport`;
 - `flushOnLeave()` эквивалентен `flush({ keepalive: true })`;
@@ -194,9 +190,8 @@ const logger = createInlineLogger({
         return response.ok;
     },
     defaultMessage: 'runtime event',
-    isInfoEnabled: true,
+    enableLogging: true,
     appVersion: '1.0.0',
-    source: 'update-sw-splash-host',
     batchSize: 32,
     maxQueueSize: 1000,
 });

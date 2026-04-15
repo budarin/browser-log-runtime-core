@@ -14,21 +14,14 @@ function resolvePositiveInt(value: number | undefined, fallback: number): number
     return value;
 }
 
-function appendOptionalField(entry: LogEntry, field: 'appVersion' | 'source', value: string): LogEntry {
-    if (value.length === 0) {
+function appendAppVersion(entry: LogEntry, appVersion: string): LogEntry {
+    if (appVersion.length === 0) {
         return entry;
-    }
-
-    if (field === 'appVersion') {
-        return {
-            ...entry,
-            appVersion: value,
-        };
     }
 
     return {
         ...entry,
-        source: value,
+        appVersion,
     };
 }
 
@@ -37,7 +30,6 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
     const batchSize = resolvePositiveInt(policy.batchSize, DEFAULT_BATCH_SIZE);
     const defaultMessage = policy.defaultMessage;
     const appVersion = policy.appVersion;
-    const source = policy.source;
 
     const queue: LogEntry[] = [];
     let isDisposed = false;
@@ -59,17 +51,11 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
             timestampMs: globalThis.Date.now(),
         };
 
-        let next = base;
-
         if (typeof appVersion === 'string') {
-            next = appendOptionalField(next, 'appVersion', appVersion);
+            return appendAppVersion(base, appVersion);
         }
 
-        if (typeof source === 'string') {
-            next = appendOptionalField(next, 'source', source);
-        }
-
-        return next;
+        return base;
     }
 
     async function flush(options?: FlushOptions): Promise<void> {
@@ -98,7 +84,7 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
             return;
         }
 
-        if (level === LogLevel.INFO && policy.isInfoEnabled === false) {
+        if (level === LogLevel.INFO && policy.enableLogging !== true) {
             return;
         }
 

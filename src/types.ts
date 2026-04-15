@@ -12,7 +12,6 @@ export type LogEntry = {
     readonly message: string;
     readonly timestampMs: number;
     readonly appVersion?: string;
-    readonly source?: string;
 };
 
 export type LogTransport = (
@@ -22,11 +21,10 @@ export type LogTransport = (
 
 export type LoggerPolicy = {
     readonly defaultMessage: string;
-    readonly isInfoEnabled: boolean;
+    readonly enableLogging?: boolean;
     readonly appVersion?: string;
     readonly batchSize?: number;
     readonly maxQueueSize?: number;
-    readonly source?: string;
 };
 
 export type FlushOptions = {

@@ -1,6 +1,6 @@
 {
     "name": "@budarin/browser-log-runtime-core",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "description": "Browser runtime core for buffered logging and global error hooks",
     "type": "module",
     "main": "./dist/index.js",
@@ -42,8 +42,5 @@
         "pnpm-install": "pnpm install",
         "upgrade-deps": "sh scripts/upgrade-deps.sh",
         "publish-package": "pnpm build && pnpm publish --access=public"
-    },
-    "dependencies": {
-        "@budarin/browser-log-runtime-core": "link:"
     }
 }

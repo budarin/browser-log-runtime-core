@@ -35,7 +35,7 @@ test('queue trim keeps the newest entries', async () => {
             return false;
         },
         defaultMessage: 'fallback',
-        isInfoEnabled: true,
+        enableLogging: true,
         maxQueueSize: 2,
         batchSize: 10,
     });
@@ -59,10 +59,26 @@ test('info is skipped when disabled', async () => {
             return true;
         },
         defaultMessage: 'fallback',
-        isInfoEnabled: false,
+        enableLogging: false,
     });
 
     logger.info('hidden');
+    await logger.flush();
+    assert.equal(sendCalls, 0);
+    logger.dispose();
+});
+
+test('info is skipped by default when enableLogging omitted', async () => {
+    let sendCalls = 0;
+    const logger = createInlineLogger({
+        send: async () => {
+            sendCalls += 1;
+            return true;
+        },
+        defaultMessage: 'fallback',
+    });
+
+    logger.info('hidden by default');
     await logger.flush();
     assert.equal(sendCalls, 0);
     logger.dispose();
@@ -78,7 +94,7 @@ test('failed send keeps queue for next flush', async () => {
             return callIndex > 1;
         },
         defaultMessage: 'fallback',
-        isInfoEnabled: true,
+        enableLogging: true,
         batchSize: 10,
     });
 
@@ -101,7 +117,7 @@ test('pagehide triggers keepalive flush', async () => {
             return keepalive;
         },
         defaultMessage: 'fallback',
-        isInfoEnabled: true,
+        enableLogging: true,
     });
 
     logger.warn('before hide');
@@ -124,7 +140,7 @@ test('global handlers attach and detach safely', async () => {
     const logger = createInlineLogger({
         send: async () => true,
         defaultMessage: 'fallback',
-        isInfoEnabled: true,
+        enableLogging: true,
     });
 
     let runtimeErrors = 0;
@@ -171,7 +187,7 @@ test('dispose detaches registered listeners', async () => {
             return false;
         },
         defaultMessage: 'fallback',
-        isInfoEnabled: true,
+        enableLogging: true,
     });
 
     logger.warn('before listeners');

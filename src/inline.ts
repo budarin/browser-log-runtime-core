@@ -4,38 +4,36 @@ const DEFAULT_BATCH_SIZE = 32;
 export type InlineLogLevel = 'info' | 'warn' | 'error';
 
 export type InlineLogEntry = {
-    readonly args: readonly unknown[];
-    readonly level: InlineLogLevel;
-    readonly message: string;
-    readonly timestampMs: number;
-    readonly appVersion?: string;
-    readonly source?: string;
+    args: unknown[];
+    level: InlineLogLevel;
+    message: string;
+    timestampMs: number;
+    appVersion?: string;
 };
 
 export type InlineLoggerSend = (
-    entries: readonly InlineLogEntry[],
+    entries: InlineLogEntry[],
     keepalive: boolean
 ) => Promise<boolean>;
 
 export type InlineLoggerOptions = {
-    readonly send: InlineLoggerSend;
-    readonly defaultMessage: string;
-    readonly isInfoEnabled: boolean;
-    readonly appVersion?: string;
-    readonly source?: string;
-    readonly batchSize?: number;
-    readonly maxQueueSize?: number;
+    send: InlineLoggerSend;
+    defaultMessage: string;
+    enableLogging?: boolean;
+    appVersion?: string;
+    batchSize?: number;
+    maxQueueSize?: number;
 };
 
 export type InlineGlobalErrorPayload = {
-    readonly message: string;
-    readonly raw: unknown;
-    readonly stack?: string;
+    message: string;
+    raw: unknown;
+    stack?: string;
 };
 
 export type InlineErrorHandlers = {
-    readonly onError?: (payload: InlineGlobalErrorPayload) => void;
-    readonly onUnhandledRejection?: (payload: InlineGlobalErrorPayload) => void;
+    onError?: (payload: InlineGlobalErrorPayload) => void;
+    onUnhandledRejection?: (payload: InlineGlobalErrorPayload) => void;
 };
 
 export type InlineLogger = {
@@ -71,7 +69,7 @@ function normalizeMessage(value: unknown, fallback: string): string {
     return text.length > 0 ? text : fallback;
 }
 
-function serializeError(error: Error): { readonly message: string; readonly name: string; readonly stack?: string } {
+function serializeError(error: Error): { message: string; name: string; stack?: string } {
     const message = normalizeMessage(error.message, 'runtime error');
     const name = normalizeMessage(error.name, 'Error');
     if (typeof error.stack === 'string' && error.stack.length > 0) {
@@ -107,7 +105,7 @@ function serializeDetail(value: unknown): unknown {
     return text.length > 0 ? text : '[unserializable]';
 }
 
-function normalizeDetails(details: unknown): readonly unknown[] {
+function normalizeDetails(details: unknown): unknown[] {
     if (details === null || details === undefined) {
         return [];
     }
@@ -167,12 +165,11 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
 
     function makeEntry(level: InlineLogLevel, message: unknown, details: unknown): InlineLogEntry {
         const entry: {
-            args: readonly unknown[];
+            args: unknown[];
             level: InlineLogLevel;
             message: string;
             timestampMs: number;
             appVersion?: string;
-            source?: string;
         } = {
             level,
             message: normalizeMessage(message, options.defaultMessage),
@@ -181,9 +178,6 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         };
         if (typeof options.appVersion === 'string' && options.appVersion.length > 0) {
             entry.appVersion = options.appVersion;
-        }
-        if (typeof options.source === 'string' && options.source.length > 0) {
-            entry.source = options.source;
         }
         return entry;
     }
@@ -212,7 +206,7 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         if (isDisposed) {
             return;
         }
-        if (level === 'info' && options.isInfoEnabled === false) {
+        if (level === 'info' && options.enableLogging !== true) {
             return;
         }
         queue.push(makeEntry(level, message, details));
