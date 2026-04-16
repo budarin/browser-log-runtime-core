@@ -6,7 +6,7 @@ export const LogLevel = {
 
 export type LogLevel = (typeof LogLevel)[keyof typeof LogLevel];
 
-export type LogEntry = {
+export type BaseLogEntry = {
     readonly args: readonly unknown[];
     readonly level: LogLevel;
     readonly message: string;
@@ -14,8 +14,20 @@ export type LogEntry = {
     readonly appVersion?: string;
 };
 
-export type LogTransport = (
-    entries: readonly LogEntry[],
+export type LogEntry<TFields extends object = Record<never, never>> = BaseLogEntry & Partial<TFields>;
+
+export type LogWriteEntry<TFields extends object = Record<never, never>> = TFields & {
+    readonly details?: unknown;
+    readonly message: string;
+};
+
+export type LogMethod<TFields extends object = Record<never, never>> = {
+    (message: string, details?: unknown): void;
+    (entry: LogWriteEntry<TFields>): void;
+};
+
+export type LogTransport<TFields extends object = Record<never, never>> = (
+    entries: readonly LogEntry<TFields>[],
     keepalive: boolean
 ) => Promise<boolean>;
 
@@ -30,10 +42,10 @@ export type FlushOptions = {
     readonly keepalive?: boolean;
 };
 
-export type RuntimeLogger = {
-    info: (message: string, details?: unknown) => void;
-    warn: (message: string, details?: unknown) => void;
-    error: (message: string, details?: unknown) => void;
+export type RuntimeLogger<TFields extends object = Record<never, never>> = {
+    info: LogMethod<TFields>;
+    warn: LogMethod<TFields>;
+    error: LogMethod<TFields>;
     flush: (options?: FlushOptions) => Promise<void>;
     flushOnLeave: () => void;
     dispose: () => void;

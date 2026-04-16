@@ -80,7 +80,7 @@ export const LogLevel = {
 } as const;
 export type LogLevel = (typeof LogLevel)[keyof typeof LogLevel];
 
-export type LogEntry = {
+export type BaseLogEntry = {
     readonly args: readonly unknown[];
     readonly level: LogLevel;
     readonly message: string;
@@ -88,8 +88,15 @@ export type LogEntry = {
     readonly appVersion?: string;
 };
 
-export type LogTransport = (
-    entries: readonly LogEntry[],
+export type LogEntry<TFields extends object = Record<never, never>> = BaseLogEntry & Partial<TFields>;
+
+export type LogWriteEntry<TFields extends object = Record<never, never>> = TFields & {
+    readonly details?: unknown;
+    readonly message: string;
+};
+
+export type LogTransport<TFields extends object = Record<never, never>> = (
+    entries: readonly LogEntry<TFields>[],
     keepalive: boolean
 ) => Promise<boolean>;
 
@@ -100,10 +107,19 @@ export type LoggerPolicy = {
     readonly maxQueueSize?: number;
 };
 
-export type RuntimeLogger = {
-    info: (message: string, details?: unknown) => void;
-    warn: (message: string, details?: unknown) => void;
-    error: (message: string, details?: unknown) => void;
+export type RuntimeLogger<TFields extends object = Record<never, never>> = {
+    info: {
+        (message: string, details?: unknown): void;
+        (entry: LogWriteEntry<TFields>): void;
+    };
+    warn: {
+        (message: string, details?: unknown): void;
+        (entry: LogWriteEntry<TFields>): void;
+    };
+    error: {
+        (message: string, details?: unknown): void;
+        (entry: LogWriteEntry<TFields>): void;
+    };
     flush: (options?: { readonly keepalive?: boolean }) => Promise<void>;
     flushOnLeave: () => void;
     dispose: () => void;
@@ -118,30 +134,100 @@ export type GlobalErrorPayload = {
 
 ## Контракт `createBufferedLogger` (root)
 
+`createBufferedLogger` больше не фиксирует финальный shape лог-записи только через базовый `LogEntry`.
+Базовый контракт остаётся минимальным, а приложение может типобезопасно расширить запись своими top-level полями.
+
 ### `transport(entries, keepalive)`
 
 - `entries` — текущий батч логов;
+- `entries` типизируются как `readonly LogEntry<TFields>[]`, поэтому transport получает и базовые поля, и расширения приложения, если они были переданы при записи;
 - `keepalive` — признак flush при уходе со страницы;
 - вернуть `true`, если батч успешно отправлен и его можно удалить из очереди;
 - вернуть `false`, если отправка неуспешна (батч останется в очереди).
 
 ### `policy`
 
-| Поле | Обязательное | Значение |
-| --- | --- | --- |
-| `enableLogging` | нет | включать ли `info` логи (`false` по умолчанию) |
-| `appVersion` | нет | если непустая строка, добавляется в `LogEntry` |
-| `batchSize` | нет | размер батча, по умолчанию `32` |
-| `maxQueueSize` | нет | лимит очереди, по умолчанию `1000` |
+- `enableLogging` — включать ли `info` логи (`false` по умолчанию)
+- `appVersion` — если непустая строка, добавляется в каждую запись как часть базового контракта
+- `batchSize` — размер батча, по умолчанию `32`
+- `maxQueueSize` — лимит очереди, по умолчанию `1000`
 
 ### Поведение `RuntimeLogger`
 
-- `info/warn/error` добавляют запись в очередь;
+- `info/warn/error` по-прежнему поддерживают старый вызов `logger.warn(message, details)`;
+- `info/warn/error` также принимают объект `logger.warn({ message, details, ...extraFields })`;
 - `info` игнорируется, если `enableLogging !== true`;
 - при переполнении очередь обрезается до `maxQueueSize` (удаляются самые старые);
 - `flush()` отправляет накопленное через `transport`;
 - `flushOnLeave()` эквивалентен `flush({ keepalive: true })`;
 - `dispose()` очищает очередь и отключает логгер.
+
+## Пример: базовый сценарий без расширений
+
+```ts
+import { createBufferedLogger } from '@budarin/browser-log-runtime-core';
+
+const logger = createBufferedLogger(
+    async (entries, keepalive) => {
+        await fetch('/api/log', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            keepalive,
+            body: JSON.stringify({ entries }),
+        });
+
+        return true;
+    },
+    {
+        enableLogging: true,
+        appVersion: '1.0.0',
+    }
+);
+
+logger.info('runtime started', { route: '/' });
+```
+
+## Пример: расширенный shape лог-записи
+
+```ts
+import { createBufferedLogger, type LogEntry } from '@budarin/browser-log-runtime-core';
+
+type AppLogFields = {
+    readonly sessionId: string;
+};
+
+type AppLogEntry = LogEntry<AppLogFields>;
+
+const logger = createBufferedLogger<AppLogFields>(
+    async (entries: readonly AppLogEntry[], keepalive) => {
+        await fetch('/api/log', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            keepalive,
+            body: JSON.stringify({ entries }),
+        });
+
+        return true;
+    },
+    {
+        enableLogging: true,
+        appVersion: '1.0.0',
+    }
+);
+
+logger.warn({
+    message: 'request failed',
+    details: { status: 500 },
+    sessionId: 'session-42',
+});
+```
+
+В этом сценарии `sessionId`:
+
+- хранится в очереди вместе с базовыми полями;
+- не теряется при batching и retry;
+- доезжает до `transport` как часть `LogEntry<AppLogFields>`;
+- не является специальной сущностью пакета, а только примером расширения.
 
 ## Контракт `attachGlobalErrorHooks` (root)
 

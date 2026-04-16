@@ -1,4 +1,11 @@
-import type { FlushOptions, LogEntry, LoggerPolicy, LogTransport, RuntimeLogger } from './types.js';
+import type {
+    BaseLogEntry,
+    FlushOptions,
+    LoggerPolicy,
+    LogTransport,
+    LogWriteEntry,
+    RuntimeLogger,
+} from './types.js';
 
 import { LogLevel } from './types.js';
 import { normalizeDetails } from './normalize.js';
@@ -14,7 +21,10 @@ function resolvePositiveInt(value: number | undefined, fallback: number): number
     return value;
 }
 
-function appendAppVersion(entry: LogEntry, appVersion: string): LogEntry {
+type AnyLogFields = Record<string, unknown>;
+type AnyLogEntry = BaseLogEntry & AnyLogFields;
+
+function appendAppVersion(entry: AnyLogEntry, appVersion: string): AnyLogEntry {
     if (appVersion.length === 0) {
         return entry;
     }
@@ -25,12 +35,29 @@ function appendAppVersion(entry: LogEntry, appVersion: string): LogEntry {
     };
 }
 
-export function createBufferedLogger(transport: LogTransport, policy: LoggerPolicy): RuntimeLogger {
+function isLogWriteEntry<TFields extends object>(
+    value: string | LogWriteEntry<TFields>
+): value is LogWriteEntry<TFields> {
+    return typeof value !== 'string';
+}
+
+export function createBufferedLogger<TFields extends object = Record<never, never>>(
+    transport: LogTransport<TFields>,
+    policy: LoggerPolicy
+): RuntimeLogger<TFields>;
+export function createBufferedLogger(
+    transport: LogTransport<Record<never, never>>,
+    policy: LoggerPolicy
+): RuntimeLogger;
+export function createBufferedLogger(
+    transport: LogTransport<AnyLogFields>,
+    policy: LoggerPolicy
+) {
     const maxQueueSize = resolvePositiveInt(policy.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
     const batchSize = resolvePositiveInt(policy.batchSize, DEFAULT_BATCH_SIZE);
     const appVersion = policy.appVersion;
 
-    const queue: LogEntry[] = [];
+    const queue: AnyLogEntry[] = [];
     let isDisposed = false;
     let isFlushing = false;
 
@@ -42,19 +69,40 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
         queue.splice(0, queue.length - maxQueueSize);
     }
 
-    function createEntry(level: LogLevel, message: string, details: unknown): LogEntry {
-        const base: LogEntry = {
-            args: normalizeDetails(details),
+    function createEntry(
+        level: LogLevel,
+        messageOrEntry: string | LogWriteEntry<AnyLogFields>,
+        details: unknown
+    ): AnyLogEntry {
+        let message: string;
+        let entryDetails = details;
+        let fields: AnyLogFields = {};
+
+        if (isLogWriteEntry(messageOrEntry)) {
+            const { details: providedDetails, message: providedMessage, ...rest } = messageOrEntry;
+            message = providedMessage;
+            entryDetails = providedDetails;
+            fields = rest;
+        } else {
+            message = messageOrEntry;
+        }
+
+        const base: BaseLogEntry = {
+            args: normalizeDetails(entryDetails),
             level,
             message,
             timestampMs: globalThis.Date.now(),
         };
+        const entry = {
+            ...base,
+            ...fields,
+        };
 
         if (typeof appVersion === 'string') {
-            return appendAppVersion(base, appVersion);
+            return appendAppVersion(entry, appVersion);
         }
 
-        return base;
+        return entry;
     }
 
     async function flush(options?: FlushOptions): Promise<void> {
@@ -78,7 +126,7 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
         }
     }
 
-    function push(level: LogLevel, message: string, details: unknown): void {
+    function push(level: LogLevel, messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
         if (isDisposed) {
             return;
         }
@@ -87,7 +135,7 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
             return;
         }
 
-        queue.push(createEntry(level, message, details));
+        queue.push(createEntry(level, messageOrEntry, details));
         trimQueue();
 
         if (isFlushing === false) {
@@ -104,16 +152,28 @@ export function createBufferedLogger(transport: LogTransport, policy: LoggerPoli
         queue.splice(0, queue.length);
     }
 
+    function info(message: string, details?: unknown): void;
+    function info(entry: LogWriteEntry<AnyLogFields>): void;
+    function info(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
+        push(LogLevel.INFO, messageOrEntry, details);
+    }
+
+    function warn(message: string, details?: unknown): void;
+    function warn(entry: LogWriteEntry<AnyLogFields>): void;
+    function warn(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
+        push(LogLevel.WARN, messageOrEntry, details);
+    }
+
+    function error(message: string, details?: unknown): void;
+    function error(entry: LogWriteEntry<AnyLogFields>): void;
+    function error(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
+        push(LogLevel.ERROR, messageOrEntry, details);
+    }
+
     return {
-        info(message, details) {
-            push(LogLevel.INFO, message, details);
-        },
-        warn(message, details) {
-            push(LogLevel.WARN, message, details);
-        },
-        error(message, details) {
-            push(LogLevel.ERROR, message, details);
-        },
+        info,
+        warn,
+        error,
         flush,
         flushOnLeave,
         dispose,

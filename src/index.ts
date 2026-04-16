@@ -1,10 +1,13 @@
 export type {
+    BaseLogEntry,
     ErrorHooksOptions,
     FlushOptions,
     GlobalErrorPayload,
     LogEntry,
+    LogMethod,
     LoggerPolicy,
     LogTransport,
+    LogWriteEntry,
     RuntimeLogger,
 } from './types.js';
 
