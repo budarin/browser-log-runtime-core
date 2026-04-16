@@ -3,7 +3,15 @@ const DEFAULT_BATCH_SIZE = 32;
 
 export type InlineLogLevel = 'info' | 'warn' | 'error';
 
-export type InlineLogEntry = {
+export type EmptyInlineLogFields = Record<never, never>;
+
+type RequiredKeys<TFields extends object> = {
+    [TKey in keyof TFields]-?: {} extends Pick<TFields, TKey> ? never : TKey;
+}[keyof TFields];
+
+type HasRequiredKeys<TFields extends object> = [RequiredKeys<TFields>] extends [never] ? false : true;
+
+export type InlineBaseLogEntry = {
     args: unknown[];
     level: InlineLogLevel;
     message: string;
@@ -11,13 +19,31 @@ export type InlineLogEntry = {
     appVersion?: string;
 };
 
-export type InlineLoggerSend = (
-    entries: InlineLogEntry[],
+export type InlineLogEntry<TFields extends object = EmptyInlineLogFields> = InlineBaseLogEntry & TFields;
+
+export type InlineLogWriteEntry<TFields extends object = EmptyInlineLogFields> = TFields & {
+    details?: unknown;
+    message: string;
+};
+
+type InlineLogMethodWithShorthand<TFields extends object> = {
+    (message: string, details?: unknown): void;
+    (entry: InlineLogWriteEntry<TFields>): void;
+};
+
+type InlineLogMethodWithEntryOnly<TFields extends object> = (entry: InlineLogWriteEntry<TFields>) => void;
+
+export type InlineLogMethod<TFields extends object = EmptyInlineLogFields> = HasRequiredKeys<TFields> extends true
+    ? InlineLogMethodWithEntryOnly<TFields>
+    : InlineLogMethodWithShorthand<TFields>;
+
+export type InlineLoggerSend<TFields extends object = EmptyInlineLogFields> = (
+    entries: InlineLogEntry<TFields>[],
     keepalive: boolean
 ) => Promise<boolean>;
 
-export type InlineLoggerOptions = {
-    send: InlineLoggerSend;
+export type InlineLoggerOptions<TFields extends object = EmptyInlineLogFields> = {
+    send: InlineLoggerSend<TFields>;
     enableLogging?: boolean;
     appVersion?: string;
     batchSize?: number;
@@ -35,10 +61,10 @@ export type InlineErrorHandlers = {
     onUnhandledRejection?: (payload: InlineGlobalErrorPayload) => void;
 };
 
-export type InlineLogger = {
-    info: (message: string, details?: unknown) => void;
-    warn: (message: string, details?: unknown) => void;
-    error: (message: string, details?: unknown) => void;
+export type InlineLogger<TFields extends object = EmptyInlineLogFields> = {
+    info: InlineLogMethod<TFields>;
+    warn: InlineLogMethod<TFields>;
+    error: InlineLogMethod<TFields>;
     flush: (keepalive?: boolean) => Promise<void>;
     flushOnLeave: () => void;
     attachGlobalErrorHandlers: (handlers?: InlineErrorHandlers) => () => void;
@@ -128,7 +154,17 @@ function toErrorPayload(raw: unknown, fallback: string): InlineGlobalErrorPayloa
     };
 }
 
-export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
+function isInlineLogWriteEntry<TFields extends object>(
+    value: string | InlineLogWriteEntry<TFields>
+): value is InlineLogWriteEntry<TFields> {
+    return typeof value !== 'string';
+}
+
+export function createInlineLogger<TFields extends object = EmptyInlineLogFields>(
+    options: InlineLoggerOptions<TFields>
+): InlineLogger<TFields>;
+export function createInlineLogger(options: InlineLoggerOptions<EmptyInlineLogFields>): InlineLogger;
+export function createInlineLogger(options: InlineLoggerOptions<Record<string, unknown>>) {
     const maxQueueSize =
         options.maxQueueSize !== undefined &&
         globalThis.Number.isInteger(options.maxQueueSize) &&
@@ -142,7 +178,7 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
             ? options.batchSize
             : DEFAULT_BATCH_SIZE;
 
-    const queue: InlineLogEntry[] = [];
+    const queue: InlineLogEntry<Record<string, unknown>>[] = [];
     let detachPagehide: (() => void) | undefined;
     let detachGlobalErrors: (() => void) | undefined;
 
@@ -155,21 +191,36 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         }
     }
 
-    function makeEntry(level: InlineLogLevel, message: string, details: unknown): InlineLogEntry {
-        const entry: {
-            args: unknown[];
-            level: InlineLogLevel;
-            message: string;
-            timestampMs: number;
-            appVersion?: string;
-        } = {
+    function makeEntry<TFields extends object>(
+        level: InlineLogLevel,
+        messageOrEntry: string | InlineLogWriteEntry<TFields>,
+        details: unknown
+    ): InlineLogEntry<TFields> {
+        let message: string;
+        let entryDetails = details;
+        let fields: TFields | EmptyInlineLogFields = {};
+
+        if (isInlineLogWriteEntry(messageOrEntry)) {
+            const { details: providedDetails, message: providedMessage, ...rest } = messageOrEntry;
+            message = providedMessage;
+            entryDetails = providedDetails;
+            fields = rest as TFields;
+        } else {
+            message = messageOrEntry;
+        }
+
+        const entry = {
             level,
             message,
-            args: normalizeDetails(details),
+            args: normalizeDetails(entryDetails),
             timestampMs: globalThis.Date.now(),
-        };
+            ...fields,
+        } as InlineLogEntry<TFields>;
         if (typeof options.appVersion === 'string' && options.appVersion.length > 0) {
-            entry.appVersion = options.appVersion;
+            return {
+                ...entry,
+                appVersion: options.appVersion,
+            };
         }
         return entry;
     }
@@ -194,14 +245,18 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         }
     }
 
-    function push(level: InlineLogLevel, message: string, details: unknown): void {
+    function push<TFields extends object>(
+        level: InlineLogLevel,
+        messageOrEntry: string | InlineLogWriteEntry<TFields>,
+        details: unknown
+    ): void {
         if (isDisposed) {
             return;
         }
         if (level === 'info' && options.enableLogging !== true) {
             return;
         }
-        queue.push(makeEntry(level, message, details));
+        queue.push(makeEntry(level, messageOrEntry, details));
         trimQueue();
         if (isFlushing === false) {
             void flush(false);
@@ -312,20 +367,28 @@ export function createInlineLogger(options: InlineLoggerOptions): InlineLogger {
         queue.splice(0, queue.length);
     }
 
-    return {
-        info(message, details) {
-            push('info', message, details);
-        },
-        warn(message, details) {
-            push('warn', message, details);
-        },
-        error(message, details) {
-            push('error', message, details);
-        },
+    function info(messageOrEntry: string | InlineLogWriteEntry<Record<string, unknown>>, details?: unknown): void {
+        push('info', messageOrEntry, details);
+    }
+
+    function warn(messageOrEntry: string | InlineLogWriteEntry<Record<string, unknown>>, details?: unknown): void {
+        push('warn', messageOrEntry, details);
+    }
+
+    function error(messageOrEntry: string | InlineLogWriteEntry<Record<string, unknown>>, details?: unknown): void {
+        push('error', messageOrEntry, details);
+    }
+
+    const logger: InlineLogger<Record<string, unknown>> = {
+        info: info as InlineLogMethod<Record<string, unknown>>,
+        warn: warn as InlineLogMethod<Record<string, unknown>>,
+        error: error as InlineLogMethod<Record<string, unknown>>,
         flush,
         flushOnLeave,
         attachGlobalErrorHandlers,
         attachPagehideFlush,
         dispose,
     };
+
+    return logger;
 }

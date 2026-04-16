@@ -14,19 +14,33 @@ export type BaseLogEntry = {
     readonly appVersion?: string;
 };
 
-export type LogEntry<TFields extends object = Record<never, never>> = BaseLogEntry & Partial<TFields>;
+export type EmptyLogFields = Record<never, never>;
 
-export type LogWriteEntry<TFields extends object = Record<never, never>> = TFields & {
+type RequiredKeys<TFields extends object> = {
+    [TKey in keyof TFields]-?: {} extends Pick<TFields, TKey> ? never : TKey;
+}[keyof TFields];
+
+type HasRequiredKeys<TFields extends object> = [RequiredKeys<TFields>] extends [never] ? false : true;
+
+export type LogEntry<TFields extends object = EmptyLogFields> = BaseLogEntry & TFields;
+
+export type LogWriteEntry<TFields extends object = EmptyLogFields> = TFields & {
     readonly details?: unknown;
     readonly message: string;
 };
 
-export type LogMethod<TFields extends object = Record<never, never>> = {
+type LogMethodWithShorthand<TFields extends object> = {
     (message: string, details?: unknown): void;
     (entry: LogWriteEntry<TFields>): void;
 };
 
-export type LogTransport<TFields extends object = Record<never, never>> = (
+type LogMethodWithEntryOnly<TFields extends object> = (entry: LogWriteEntry<TFields>) => void;
+
+export type LogMethod<TFields extends object = EmptyLogFields> = HasRequiredKeys<TFields> extends true
+    ? LogMethodWithEntryOnly<TFields>
+    : LogMethodWithShorthand<TFields>;
+
+export type LogTransport<TFields extends object = EmptyLogFields> = (
     entries: readonly LogEntry<TFields>[],
     keepalive: boolean
 ) => Promise<boolean>;
@@ -42,7 +56,7 @@ export type FlushOptions = {
     readonly keepalive?: boolean;
 };
 
-export type RuntimeLogger<TFields extends object = Record<never, never>> = {
+export type RuntimeLogger<TFields extends object = EmptyLogFields> = {
     info: LogMethod<TFields>;
     warn: LogMethod<TFields>;
     error: LogMethod<TFields>;

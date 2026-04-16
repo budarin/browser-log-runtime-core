@@ -30,16 +30,16 @@ import {
 } from '@budarin/browser-log-runtime-core';
 ```
 
-## Inline runtime (size-optimized)
+## Inline runtime
 
-Для inline runtime-сценариев (splash/update-host) используйте отдельный lightweight entrypoint:
+Для inline runtime-сценариев (splash/update-host) используйте отдельный entrypoint:
 
 ```ts
 import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 ```
 
-Этот entrypoint не реэкспортирует root helpers и содержит узкую специализированную реализацию,
-чтобы уменьшить итоговый bundle dependency graph для inline-кода.
+Этот entrypoint не реэкспортирует root helpers, но теперь поддерживает ту же generic-модель shape лог-записи,
+что и root runtime API.
 
 ### API `createInlineLogger(options)`
 
@@ -53,9 +53,15 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 
 Возвращаемый logger:
 
-- `info(message?, details?)`
-- `warn(message?, details?)`
-- `error(message?, details?)`
+- если у logger нет обязательных extra fields:
+  - `info(message?, details?)`
+  - `warn(message?, details?)`
+  - `error(message?, details?)`
+- object-вызов всегда доступен:
+  - `info({ message, details?, ...extraFields })`
+  - `warn({ message, details?, ...extraFields })`
+  - `error({ message, details?, ...extraFields })`
+- если у logger есть обязательные extra fields, shorthand-вызов по строке запрещён типами
 - `flush(keepalive?: boolean)`
 - `flushOnLeave()`
 - `attachGlobalErrorHandlers({ onError?, onUnhandledRejection? }) -> detach`
@@ -65,6 +71,8 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 ### Поведение inline logger
 
 - `info` включен только когда `enableLogging === true`;
+- queue хранит точный `InlineLogEntry<TFields>` shape конкретного logger instance;
+- `send` получает тот же точный shape без optionalization обязательных полей;
 - очередь ограничивается `maxQueueSize` (удаляются самые старые записи);
 - `flush` отправляет батчи в цикле до первой неуспешной отправки;
 - `flushOnLeave` вызывает отправку с `keepalive = true`;
@@ -88,14 +96,16 @@ export type BaseLogEntry = {
     readonly appVersion?: string;
 };
 
-export type LogEntry<TFields extends object = Record<never, never>> = BaseLogEntry & Partial<TFields>;
+export type EmptyLogFields = Record<never, never>;
 
-export type LogWriteEntry<TFields extends object = Record<never, never>> = TFields & {
+export type LogEntry<TFields extends object = EmptyLogFields> = BaseLogEntry & TFields;
+
+export type LogWriteEntry<TFields extends object = EmptyLogFields> = TFields & {
     readonly details?: unknown;
     readonly message: string;
 };
 
-export type LogTransport<TFields extends object = Record<never, never>> = (
+export type LogTransport<TFields extends object = EmptyLogFields> = (
     entries: readonly LogEntry<TFields>[],
     keepalive: boolean
 ) => Promise<boolean>;
@@ -107,19 +117,10 @@ export type LoggerPolicy = {
     readonly maxQueueSize?: number;
 };
 
-export type RuntimeLogger<TFields extends object = Record<never, never>> = {
-    info: {
-        (message: string, details?: unknown): void;
-        (entry: LogWriteEntry<TFields>): void;
-    };
-    warn: {
-        (message: string, details?: unknown): void;
-        (entry: LogWriteEntry<TFields>): void;
-    };
-    error: {
-        (message: string, details?: unknown): void;
-        (entry: LogWriteEntry<TFields>): void;
-    };
+export type RuntimeLogger<TFields extends object = EmptyLogFields> = {
+    info: LogMethod<TFields>;
+    warn: LogMethod<TFields>;
+    error: LogMethod<TFields>;
     flush: (options?: { readonly keepalive?: boolean }) => Promise<void>;
     flushOnLeave: () => void;
     dispose: () => void;
@@ -140,7 +141,7 @@ export type GlobalErrorPayload = {
 ### `transport(entries, keepalive)`
 
 - `entries` — текущий батч логов;
-- `entries` типизируются как `readonly LogEntry<TFields>[]`, поэтому transport получает и базовые поля, и расширения приложения, если они были переданы при записи;
+- `entries` типизируются как `readonly LogEntry<TFields>[]`, поэтому transport получает ровно тот же shape, что и конкретный logger instance;
 - `keepalive` — признак flush при уходе со страницы;
 - вернуть `true`, если батч успешно отправлен и его можно удалить из очереди;
 - вернуть `false`, если отправка неуспешна (батч останется в очереди).
@@ -154,8 +155,9 @@ export type GlobalErrorPayload = {
 
 ### Поведение `RuntimeLogger`
 
-- `info/warn/error` по-прежнему поддерживают старый вызов `logger.warn(message, details)`;
-- `info/warn/error` также принимают объект `logger.warn({ message, details, ...extraFields })`;
+- если у logger нет обязательных extra fields, `info/warn/error` по-прежнему поддерживают старый вызов `logger.warn(message, details)`;
+- если у logger есть обязательные extra fields, запись принимается только в форме `logger.warn({ message, details, ...extraFields })`;
+- object-вызов `logger.warn({ message, details, ...extraFields })` работает в обоих сценариях;
 - `info` игнорируется, если `enableLogging !== true`;
 - при переполнении очередь обрезается до `maxQueueSize` (удаляются самые старые);
 - `flush()` отправляет накопленное через `transport`;
@@ -229,6 +231,37 @@ logger.warn({
 - доезжает до `transport` как часть `LogEntry<AppLogFields>`;
 - не является специальной сущностью пакета, а только примером расширения.
 
+## Пример: обязательные и опциональные extra fields
+
+```ts
+import { createBufferedLogger } from '@budarin/browser-log-runtime-core';
+
+type RuntimeLogFields = {
+    readonly source: 'app' | 'serviceWorker';
+    readonly sessionId: string;
+    readonly traceId?: string;
+};
+
+const logger = createBufferedLogger<RuntimeLogFields>(
+    async (entries) => {
+        entries[0].source;
+        entries[0].sessionId;
+        entries[0].traceId;
+        return true;
+    },
+    {}
+);
+
+logger.error({
+    message: 'request failed',
+    source: 'app',
+    sessionId: 'session-42',
+});
+
+// TypeScript error: нельзя забыть обязательные поля.
+logger.error('request failed');
+```
+
 ## Контракт `attachGlobalErrorHooks` (root)
 
 `attachGlobalErrorHooks(options)` подписывает глобальные события:
@@ -293,4 +326,32 @@ function teardownRuntime(): void {
     detachPagehide();
     logger.dispose();
 }
+```
+
+## Пример: inline logger с обязательными extra fields
+
+```ts
+import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
+
+type InlineRuntimeFields = {
+    readonly source: 'app' | 'serviceWorker';
+    readonly sessionId: string;
+};
+
+const logger = createInlineLogger<InlineRuntimeFields>({
+    send: async (entries) => {
+        entries[0].source;
+        entries[0].sessionId;
+        return true;
+    },
+});
+
+logger.error({
+    message: 'runtime failed',
+    source: 'app',
+    sessionId: 'session-42',
+});
+
+// TypeScript error
+logger.error('runtime failed');
 ```

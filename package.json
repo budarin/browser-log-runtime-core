@@ -1,6 +1,6 @@
 {
     "name": "@budarin/browser-log-runtime-core",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "description": "Browser runtime core for buffered logging and global error hooks",
     "type": "module",
     "main": "./dist/index.js",
@@ -37,7 +37,7 @@
     "scripts": {
         "build": "tsc",
         "test": "node --test tests/**/*.test.mjs",
-        "type-check": "tsc -b -noEmit",
+        "type-check": "tsc -p tsconfig.type-tests.json",
         "clear-caches": "sh scripts/clear-caches.sh",
         "pnpm-install": "pnpm install",
         "upgrade-deps": "sh scripts/upgrade-deps.sh",

@@ -104,6 +104,44 @@ test('failed send keeps queue for next flush', async () => {
     logger.dispose();
 });
 
+test('inline extended fields survive retries and reach send', async () => {
+    const sentBatches = [];
+    let attempt = 0;
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentBatches.push(
+                entries.map((entry) => ({
+                    message: entry.message,
+                    source: entry.source,
+                    sessionId: entry.sessionId,
+                    appVersion: entry.appVersion,
+                }))
+            );
+            attempt += 1;
+            return attempt > 1;
+        },
+        appVersion: '3.0.0',
+        batchSize: 10,
+    });
+
+    logger.error({
+        message: 'inline retry',
+        details: { reason: 'network' },
+        source: 'app',
+        sessionId: 'session-inline',
+    });
+
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentBatches, [
+        [{ message: 'inline retry', source: 'app', sessionId: 'session-inline', appVersion: '3.0.0' }],
+        [{ message: 'inline retry', source: 'app', sessionId: 'session-inline', appVersion: '3.0.0' }],
+    ]);
+
+    logger.dispose();
+});
+
 test('pagehide triggers keepalive flush', async () => {
     const restoreGlobals = withGlobalEventTarget();
     const keepaliveValues = [];

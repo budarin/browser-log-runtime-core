@@ -2,6 +2,7 @@
 .prettierrc.mjs
 .prettierignore
 tsconfig.json
+tsconfig.type-tests.json
 src/
 .gitignore
 README.md

@@ -1,7 +1,9 @@
 import type {
-    BaseLogEntry,
+    EmptyLogFields,
     FlushOptions,
+    LogEntry,
     LoggerPolicy,
+    LogMethod,
     LogTransport,
     LogWriteEntry,
     RuntimeLogger,
@@ -22,7 +24,7 @@ function resolvePositiveInt(value: number | undefined, fallback: number): number
 }
 
 type AnyLogFields = Record<string, unknown>;
-type AnyLogEntry = BaseLogEntry & AnyLogFields;
+type AnyLogEntry = LogEntry<AnyLogFields>;
 
 function appendAppVersion(entry: AnyLogEntry, appVersion: string): AnyLogEntry {
     if (appVersion.length === 0) {
@@ -41,12 +43,12 @@ function isLogWriteEntry<TFields extends object>(
     return typeof value !== 'string';
 }
 
-export function createBufferedLogger<TFields extends object = Record<never, never>>(
+export function createBufferedLogger<TFields extends object = EmptyLogFields>(
     transport: LogTransport<TFields>,
     policy: LoggerPolicy
 ): RuntimeLogger<TFields>;
 export function createBufferedLogger(
-    transport: LogTransport<Record<never, never>>,
+    transport: LogTransport<EmptyLogFields>,
     policy: LoggerPolicy
 ): RuntimeLogger;
 export function createBufferedLogger(
@@ -57,7 +59,7 @@ export function createBufferedLogger(
     const batchSize = resolvePositiveInt(policy.batchSize, DEFAULT_BATCH_SIZE);
     const appVersion = policy.appVersion;
 
-    const queue: AnyLogEntry[] = [];
+    const queue: LogEntry<AnyLogFields>[] = [];
     let isDisposed = false;
     let isFlushing = false;
 
@@ -69,25 +71,25 @@ export function createBufferedLogger(
         queue.splice(0, queue.length - maxQueueSize);
     }
 
-    function createEntry(
+    function createEntry<TFields extends object>(
         level: LogLevel,
-        messageOrEntry: string | LogWriteEntry<AnyLogFields>,
+        messageOrEntry: string | LogWriteEntry<TFields>,
         details: unknown
-    ): AnyLogEntry {
+    ): LogEntry<TFields> {
         let message: string;
         let entryDetails = details;
-        let fields: AnyLogFields = {};
+        let fields: TFields | EmptyLogFields = {};
 
         if (isLogWriteEntry(messageOrEntry)) {
             const { details: providedDetails, message: providedMessage, ...rest } = messageOrEntry;
             message = providedMessage;
             entryDetails = providedDetails;
-            fields = rest;
+            fields = rest as TFields;
         } else {
             message = messageOrEntry;
         }
 
-        const base: BaseLogEntry = {
+        const base: LogEntry<EmptyLogFields> = {
             args: normalizeDetails(entryDetails),
             level,
             message,
@@ -96,10 +98,10 @@ export function createBufferedLogger(
         const entry = {
             ...base,
             ...fields,
-        };
+        } as LogEntry<TFields>;
 
         if (typeof appVersion === 'string') {
-            return appendAppVersion(entry, appVersion);
+            return appendAppVersion(entry, appVersion) as LogEntry<TFields>;
         }
 
         return entry;
@@ -126,7 +128,11 @@ export function createBufferedLogger(
         }
     }
 
-    function push(level: LogLevel, messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
+    function push<TFields extends object>(
+        level: LogLevel,
+        messageOrEntry: string | LogWriteEntry<TFields>,
+        details?: unknown
+    ): void {
         if (isDisposed) {
             return;
         }
@@ -152,30 +158,26 @@ export function createBufferedLogger(
         queue.splice(0, queue.length);
     }
 
-    function info(message: string, details?: unknown): void;
-    function info(entry: LogWriteEntry<AnyLogFields>): void;
     function info(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
         push(LogLevel.INFO, messageOrEntry, details);
     }
 
-    function warn(message: string, details?: unknown): void;
-    function warn(entry: LogWriteEntry<AnyLogFields>): void;
     function warn(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
         push(LogLevel.WARN, messageOrEntry, details);
     }
 
-    function error(message: string, details?: unknown): void;
-    function error(entry: LogWriteEntry<AnyLogFields>): void;
     function error(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
         push(LogLevel.ERROR, messageOrEntry, details);
     }
 
-    return {
-        info,
-        warn,
-        error,
+    const logger: RuntimeLogger<AnyLogFields> = {
+        info: info as LogMethod<AnyLogFields>,
+        warn: warn as LogMethod<AnyLogFields>,
+        error: error as LogMethod<AnyLogFields>,
         flush,
         flushOnLeave,
         dispose,
     };
+
+    return logger;
 }

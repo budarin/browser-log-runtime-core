@@ -1,5 +1,6 @@
 export type {
     BaseLogEntry,
+    EmptyLogFields,
     ErrorHooksOptions,
     FlushOptions,
     GlobalErrorPayload,

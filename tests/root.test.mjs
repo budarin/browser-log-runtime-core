@@ -77,6 +77,7 @@ test('extended entry fields survive queue retries and reach transport', async ()
             sentBatches.push(
                 entries.map((entry) => ({
                     message: entry.message,
+                    source: entry.source,
                     sessionId: entry.sessionId,
                     appVersion: entry.appVersion,
                 }))
@@ -94,6 +95,7 @@ test('extended entry fields survive queue retries and reach transport', async ()
     logger.warn({
         message: 'retry me',
         details: { reason: 'network' },
+        source: 'app',
         sessionId: 'session-42',
     });
 
@@ -101,8 +103,8 @@ test('extended entry fields survive queue retries and reach transport', async ()
     await logger.flush();
 
     assert.deepEqual(sentBatches, [
-        [{ message: 'retry me', sessionId: 'session-42', appVersion: '2.0.0' }],
-        [{ message: 'retry me', sessionId: 'session-42', appVersion: '2.0.0' }],
+        [{ message: 'retry me', source: 'app', sessionId: 'session-42', appVersion: '2.0.0' }],
+        [{ message: 'retry me', source: 'app', sessionId: 'session-42', appVersion: '2.0.0' }],
     ]);
 
     logger.dispose();
@@ -117,6 +119,7 @@ test('flushOnLeave via pagehide keeps extended shape', async () => {
                 keepalive,
                 entries: entries.map((entry) => ({
                     message: entry.message,
+                    source: entry.source,
                     sessionId: entry.sessionId,
                 })),
             });
@@ -131,6 +134,7 @@ test('flushOnLeave via pagehide keeps extended shape', async () => {
     logger.error({
         message: 'before leave',
         details: new Error('boom'),
+        source: 'serviceWorker',
         sessionId: 'session-pagehide',
     });
     await delay(0);
@@ -142,7 +146,7 @@ test('flushOnLeave via pagehide keeps extended shape', async () => {
     assert.equal(received.some((batch) => batch.keepalive === true), true);
     assert.deepEqual(received[received.length - 1], {
         keepalive: true,
-        entries: [{ message: 'before leave', sessionId: 'session-pagehide' }],
+        entries: [{ message: 'before leave', source: 'serviceWorker', sessionId: 'session-pagehide' }],
     });
 
     detach();
