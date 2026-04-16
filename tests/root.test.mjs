@@ -69,6 +69,172 @@ test('base buffered logger flow stays compatible', async () => {
     logger.dispose();
 });
 
+test('root logger keeps plain object details structured', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    logger.warn('object details', { foo: 'bar' });
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'object details',
+            args: [{ foo: 'bar' }],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('root logger keeps array details structured', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    logger.warn('array details', [{ a: 1 }, 'x']);
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'array details',
+            args: [{ a: 1 }, 'x'],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('root logger keeps empty object details instead of dropping them', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    logger.warn('empty object', {});
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'empty object',
+            args: [{}],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('root logger serializes bigint details as strings', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    logger.warn('bigint details', 10n);
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'bigint details',
+            args: ['10'],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('root logger keeps nested bigint and error JSON-compatible', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    logger.warn('nested structured details', {
+        count: 10n,
+        error: new Error('boom'),
+    });
+    await delay(0);
+    await logger.flush();
+
+    assert.equal(sentEntries.length, 1);
+    assert.deepEqual(sentEntries[0].args[0].count, '10');
+    assert.equal(sentEntries[0].args[0].error.name, 'Error');
+    assert.equal(sentEntries[0].args[0].error.message, 'boom');
+
+    logger.dispose();
+});
+
+test('root logger keeps working for unserializable details', async () => {
+    const sentEntries = [];
+    const logger = createBufferedLogger(
+        async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        {
+            enableLogging: true,
+        }
+    );
+
+    const circular = {};
+    circular.self = circular;
+
+    logger.warn('circular details', circular);
+    logger.warn('after circular', { ok: true });
+    await delay(0);
+    await logger.flush();
+
+    assert.equal(sentEntries.length, 2);
+    assert.equal(typeof sentEntries[0].args[0], 'string');
+    assert.deepEqual(sentEntries[1].args, [{ ok: true }]);
+
+    logger.dispose();
+});
+
 test('extended entry fields survive queue retries and reach transport', async () => {
     const sentBatches = [];
     let attempt = 0;

@@ -1,5 +1,9 @@
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && globalThis.Array.isArray(value) === false;
+    if (typeof value !== 'object' || value === null || globalThis.Array.isArray(value)) {
+        return false;
+    }
+    const prototype = globalThis.Object.getPrototypeOf(value);
+    return prototype === globalThis.Object.prototype || prototype === null;
 }
 
 function stringifyUnknown(value: unknown): string {
@@ -23,6 +27,48 @@ export function normalizeMessage(value: unknown, fallback: string): string {
     return message.length > 0 ? message : fallback;
 }
 
+function serializeError(error: Error): { readonly message: string; readonly name: string; readonly stack?: string } {
+    const normalizedError: {
+        readonly message: string;
+        readonly name: string;
+        readonly stack?: string;
+    } = {
+        message: error.message,
+        name: error.name,
+    };
+
+    if (typeof error.stack === 'string' && error.stack.length > 0) {
+        return {
+            ...normalizedError,
+            stack: error.stack,
+        };
+    }
+
+    return normalizedError;
+}
+
+function toJsonCompatible(value: Record<string, unknown> | readonly unknown[]): unknown {
+    try {
+        const serialized = globalThis.JSON.stringify(value, (_, currentValue) => {
+            if (typeof currentValue === 'bigint') {
+                return currentValue.toString();
+            }
+            if (currentValue instanceof globalThis.Error) {
+                return serializeError(currentValue);
+            }
+            return currentValue;
+        });
+
+        if (typeof serialized !== 'string') {
+            return undefined;
+        }
+
+        return globalThis.JSON.parse(serialized);
+    } catch {
+        return undefined;
+    }
+}
+
 export function serializeUnknown(value: unknown): unknown {
     if (
         value === null ||
@@ -34,37 +80,23 @@ export function serializeUnknown(value: unknown): unknown {
         return value;
     }
 
+    if (typeof value === 'bigint') {
+        return value.toString();
+    }
+
     if (value instanceof globalThis.Error) {
-        const normalizedError: {
-            readonly message: string;
-            readonly name: string;
-            readonly stack?: string;
-        } = {
-            message: value.message,
-            name: value.name,
-        };
-
-        if (typeof value.stack === 'string' && value.stack.length > 0) {
-            return {
-                ...normalizedError,
-                stack: value.stack,
-            };
-        }
-
-        return normalizedError;
+        return serializeError(value);
     }
 
-    try {
-        const serialized = globalThis.JSON.stringify(value);
-        if (serialized === undefined) {
-            return stringifyUnknown(value);
+    if (globalThis.Array.isArray(value) || isPlainObject(value)) {
+        const structured = toJsonCompatible(value);
+        if (structured !== undefined) {
+            return structured;
         }
-
-        return globalThis.JSON.parse(serialized);
-    } catch {
-        const stringified = stringifyUnknown(value);
-        return stringified.length > 0 ? stringified : '[unserializable]';
     }
+
+    const stringified = stringifyUnknown(value);
+    return stringified.length > 0 ? stringified : '[unserializable]';
 }
 
 export function normalizeDetails(value: unknown): readonly unknown[] {
@@ -77,11 +109,6 @@ export function normalizeDetails(value: unknown): readonly unknown[] {
     }
 
     if (isPlainObject(value)) {
-        const keys = globalThis.Object.keys(value);
-        if (keys.length === 0) {
-            return [];
-        }
-
         return [serializeUnknown(value)];
     }
 

@@ -96,6 +96,34 @@ function serializeError(error: Error): { message: string; name: string; stack?: 
     };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object') {
+        return false;
+    }
+    const prototype = globalThis.Object.getPrototypeOf(value);
+    return prototype === globalThis.Object.prototype || prototype === null;
+}
+
+function serializeJsonCompatible(value: Record<string, unknown> | unknown[]): unknown {
+    try {
+        const serialized = globalThis.JSON.stringify(value, (_, currentValue) => {
+            if (typeof currentValue === 'bigint') {
+                return currentValue.toString();
+            }
+            if (currentValue instanceof globalThis.Error) {
+                return serializeError(currentValue);
+            }
+            return currentValue;
+        });
+        if (typeof serialized !== 'string') {
+            return undefined;
+        }
+        return globalThis.JSON.parse(serialized);
+    } catch {
+        return undefined;
+    }
+}
+
 function serializeDetail(value: unknown): unknown {
     if (
         value === null ||
@@ -111,6 +139,12 @@ function serializeDetail(value: unknown): unknown {
     }
     if (value instanceof globalThis.Error) {
         return serializeError(value);
+    }
+    if (globalThis.Array.isArray(value) || isPlainObject(value)) {
+        const structured = serializeJsonCompatible(value);
+        if (structured !== undefined) {
+            return structured;
+        }
     }
     const text = stringify(value);
     return text.length > 0 ? text : '[unserializable]';

@@ -73,6 +73,9 @@ import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
 - `info` включен только когда `enableLogging === true`;
 - queue хранит точный `InlineLogEntry<TFields>` shape конкретного logger instance;
 - `send` получает тот же точный shape без optionalization обязательных полей;
+- `details` нормализуется в `args` без потери JSON-совместимой структуры: plain object / array доезжают как объект / массив, а не как `"[object Object]"`;
+- для `bigint` используется строковое представление, для `Error` — объект `{ name, message, stack? }`;
+- если значение не удаётся честно привести к JSON-совместимой структуре, используется безопасный fallback без падения logger;
 - очередь ограничивается `maxQueueSize` (удаляются самые старые записи);
 - `flush` отправляет батчи в цикле до первой неуспешной отправки;
 - `flushOnLeave` вызывает отправку с `keepalive = true`;
@@ -158,6 +161,8 @@ export type GlobalErrorPayload = {
 - если у logger нет обязательных extra fields, `info/warn/error` по-прежнему поддерживают старый вызов `logger.warn(message, details)`;
 - если у logger есть обязательные extra fields, запись принимается только в форме `logger.warn({ message, details, ...extraFields })`;
 - object-вызов `logger.warn({ message, details, ...extraFields })` работает в обоих сценариях;
+- `details` нормализуется в `args` с сохранением JSON-совместимой структуры: plain object / array не превращаются в `"[object Object]"`;
+- `bigint` сериализуется в строку, `Error` — в объект `{ name, message, stack? }`, а для реально несериализуемых значений остаётся безопасный fallback;
 - `info` игнорируется, если `enableLogging !== true`;
 - при переполнении очередь обрезается до `maxQueueSize` (удаляются самые старые);
 - `flush()` отправляет накопленное через `transport`;

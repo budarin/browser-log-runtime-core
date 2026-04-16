@@ -142,6 +142,132 @@ test('inline extended fields survive retries and reach send', async () => {
     logger.dispose();
 });
 
+test('plain object details stay structured in args', async () => {
+    const sentEntries = [];
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        enableLogging: true,
+    });
+
+    logger.warn('object details', { foo: 'bar' });
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'object details',
+            args: [{ foo: 'bar' }],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('array details keep nested structured values', async () => {
+    const sentEntries = [];
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        enableLogging: true,
+    });
+
+    logger.warn('array details', [{ a: 1 }, 'x']);
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'array details',
+            args: [{ a: 1 }, 'x'],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('error details stay normalized objects', async () => {
+    const sentEntries = [];
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        enableLogging: true,
+    });
+
+    logger.error('error details', new Error('boom'));
+    await delay(0);
+    await logger.flush();
+
+    assert.equal(sentEntries.length, 1);
+    assert.equal(sentEntries[0].args.length, 1);
+    assert.equal(sentEntries[0].args[0].name, 'Error');
+    assert.equal(sentEntries[0].args[0].message, 'boom');
+    assert.equal(typeof sentEntries[0].args[0].stack, 'string');
+
+    logger.dispose();
+});
+
+test('bigint details are serialized as strings', async () => {
+    const sentEntries = [];
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        enableLogging: true,
+    });
+
+    logger.warn('bigint details', 10n);
+    await delay(0);
+    await logger.flush();
+
+    assert.deepEqual(sentEntries, [
+        {
+            level: 'warn',
+            message: 'bigint details',
+            args: ['10'],
+            timestampMs: sentEntries[0]?.timestampMs,
+        },
+    ]);
+
+    logger.dispose();
+});
+
+test('unserializable details fall back without crashing logger', async () => {
+    const sentEntries = [];
+    const logger = createInlineLogger({
+        send: async (entries) => {
+            sentEntries.push(...entries);
+            return true;
+        },
+        enableLogging: true,
+    });
+
+    const circular = {};
+    circular.self = circular;
+
+    logger.warn('circular details', circular);
+    logger.warn('after circular', { ok: true });
+    await delay(0);
+    await logger.flush();
+
+    assert.equal(sentEntries.length, 2);
+    assert.equal(typeof sentEntries[0].args[0], 'string');
+    assert.deepEqual(sentEntries[1].args, [{ ok: true }]);
+
+    logger.dispose();
+});
+
 test('pagehide triggers keepalive flush', async () => {
     const restoreGlobals = withGlobalEventTarget();
     const keepaliveValues = [];
