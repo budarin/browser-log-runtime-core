@@ -1,19 +1,9 @@
-import type {
-    EmptyLogFields,
-    FlushOptions,
-    LogEntry,
-    LoggerPolicy,
-    LogMethod,
-    LogTransport,
-    LogWriteEntry,
-    RuntimeLogger,
-} from './types.js';
-
-import { LogLevel } from './types.js';
-import { normalizeDetails } from './normalize.js';
+import type { BufferedLogger, BufferedLoggerFlush, CreateBufferedLoggerOptions, FlushOptions } from './types.js';
 
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
 const DEFAULT_BATCH_SIZE = 32;
+/** Default quiet time after the last `enqueue` before auto-flush (trailing debounce). */
+export const DEFAULT_DEBOUNCE_MS = 50;
 
 function resolvePositiveInt(value: number | undefined, fallback: number): number {
     if (value === undefined || globalThis.Number.isInteger(value) === false || value <= 0) {
@@ -23,45 +13,58 @@ function resolvePositiveInt(value: number | undefined, fallback: number): number
     return value;
 }
 
-type AnyLogFields = Record<string, unknown>;
-type AnyLogEntry = LogEntry<AnyLogFields>;
-
-function appendAppVersion(entry: AnyLogEntry, appVersion: string): AnyLogEntry {
-    if (appVersion.length === 0) {
-        return entry;
+function resolveNonNegativeInt(value: number | undefined, fallback: number): number {
+    if (value === undefined || globalThis.Number.isInteger(value) === false || value < 0) {
+        return fallback;
     }
 
-    return {
-        ...entry,
-        appVersion,
-    };
+    return value;
 }
 
-function isLogWriteEntry<TFields extends object>(
-    value: string | LogWriteEntry<TFields>
-): value is LogWriteEntry<TFields> {
-    return typeof value !== 'string';
+function mergeFlushOptions(a: FlushOptions | undefined, b: FlushOptions | undefined): FlushOptions | undefined {
+    if (a === undefined) {
+        return b;
+    }
+
+    if (b === undefined) {
+        return a;
+    }
+
+    if (a.keepalive === true || b.keepalive === true) {
+        return {
+            keepalive: true,
+        };
+    }
+
+    return {};
 }
 
-export function createBufferedLogger<TFields extends object = EmptyLogFields>(
-    transport: LogTransport<TFields>,
-    policy: LoggerPolicy
-): RuntimeLogger<TFields>;
-export function createBufferedLogger(
-    transport: LogTransport<EmptyLogFields>,
-    policy: LoggerPolicy
-): RuntimeLogger;
-export function createBufferedLogger(
-    transport: LogTransport<AnyLogFields>,
-    policy: LoggerPolicy
-) {
-    const maxQueueSize = resolvePositiveInt(policy.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
-    const batchSize = resolvePositiveInt(policy.batchSize, DEFAULT_BATCH_SIZE);
-    const appVersion = policy.appVersion;
+async function callFlush<T>(flush: BufferedLoggerFlush<T>, batch: readonly T[], options: FlushOptions): Promise<boolean> {
+    return (await flush(batch, options)) === true;
+}
 
-    const queue: LogEntry<AnyLogFields>[] = [];
+export function createBufferedLogger<T>(options: CreateBufferedLoggerOptions<T>): BufferedLogger<T> {
+    const maxQueueSize = resolvePositiveInt(options.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
+    const batchSize = resolvePositiveInt(options.batchSize, DEFAULT_BATCH_SIZE);
+    const debounceMs =
+        options.debounceMs === undefined
+            ? DEFAULT_DEBOUNCE_MS
+            : resolveNonNegativeInt(options.debounceMs, 0);
+    const flushBatch = options.flush;
+
+    const queue: T[] = [];
     let isDisposed = false;
     let isFlushing = false;
+    let flushScheduled = false;
+    let pendingFollowUp: FlushOptions | undefined;
+    let debounceTimerId: ReturnType<typeof globalThis.setTimeout> | undefined;
+
+    function clearDebounceTimer(): void {
+        if (debounceTimerId !== undefined) {
+            globalThis.clearTimeout(debounceTimerId);
+            debounceTimerId = undefined;
+        }
+    }
 
     function trimQueue(): void {
         if (queue.length <= maxQueueSize) {
@@ -71,113 +74,115 @@ export function createBufferedLogger(
         queue.splice(0, queue.length - maxQueueSize);
     }
 
-    function createEntry<TFields extends object>(
-        level: LogLevel,
-        messageOrEntry: string | LogWriteEntry<TFields>,
-        details: unknown
-    ): LogEntry<TFields> {
-        let message: string;
-        let entryDetails = details;
-        let fields: TFields | EmptyLogFields = {};
-
-        if (isLogWriteEntry(messageOrEntry)) {
-            const { details: providedDetails, message: providedMessage, ...rest } = messageOrEntry;
-            message = providedMessage;
-            entryDetails = providedDetails;
-            fields = rest as TFields;
-        } else {
-            message = messageOrEntry;
+    function scheduleFlush(): void {
+        if (isDisposed || isFlushing) {
+            return;
         }
 
-        const base: LogEntry<EmptyLogFields> = {
-            args: normalizeDetails(entryDetails),
-            level,
-            message,
-            timestampMs: globalThis.Date.now(),
-        };
-        const entry = {
-            ...base,
-            ...fields,
-        } as LogEntry<TFields>;
-
-        if (typeof appVersion === 'string') {
-            return appendAppVersion(entry, appVersion) as LogEntry<TFields>;
+        if (debounceMs > 0) {
+            clearDebounceTimer();
+            debounceTimerId = globalThis.setTimeout(() => {
+                debounceTimerId = undefined;
+                if (isDisposed === false) {
+                    void flushInternal();
+                }
+            }, debounceMs);
+            return;
         }
 
-        return entry;
+        if (flushScheduled) {
+            return;
+        }
+
+        flushScheduled = true;
+        queueMicrotask(() => {
+            flushScheduled = false;
+            if (isDisposed === false) {
+                void flushInternal();
+            }
+        });
     }
 
-    async function flush(options?: FlushOptions): Promise<void> {
-        if (isDisposed || isFlushing || queue.length === 0) {
+    async function flushInternal(flushOptions?: FlushOptions): Promise<void> {
+        if (isDisposed) {
+            return;
+        }
+
+        clearDebounceTimer();
+
+        if (isFlushing) {
+            pendingFollowUp = mergeFlushOptions(pendingFollowUp, flushOptions);
+            return;
+        }
+
+        if (queue.length === 0) {
             return;
         }
 
         isFlushing = true;
         try {
-            const keepalive = options?.keepalive === true;
-            while (queue.length > 0) {
+            const passOptions: FlushOptions = flushOptions ?? {};
+
+            while (queue.length > 0 && isDisposed === false) {
                 const batch = queue.slice(0, batchSize);
-                const isSuccess = await transport(batch, keepalive);
-                if (isSuccess === false) {
-                    break;
+
+                if (isDisposed) {
+                    return;
                 }
-                queue.splice(0, batch.length);
+
+                const ok = await callFlush(flushBatch, batch, passOptions);
+
+                if (ok) {
+                    queue.splice(0, batch.length);
+                    continue;
+                }
+
+                return;
             }
         } finally {
             isFlushing = false;
+            if (isDisposed) {
+                pendingFollowUp = undefined;
+                return;
+            }
+
+            const followUp = pendingFollowUp;
+            pendingFollowUp = undefined;
+            if (queue.length > 0 && followUp !== undefined) {
+                void flushInternal(followUp);
+            }
         }
     }
 
-    function push<TFields extends object>(
-        level: LogLevel,
-        messageOrEntry: string | LogWriteEntry<TFields>,
-        details?: unknown
-    ): void {
+    function enqueue(entry: T): void {
         if (isDisposed) {
             return;
         }
 
-        if (level === LogLevel.INFO && policy.enableLogging !== true) {
-            return;
-        }
-
-        queue.push(createEntry(level, messageOrEntry, details));
+        queue.push(entry);
         trimQueue();
 
         if (isFlushing === false) {
-            void flush();
+            scheduleFlush();
         }
     }
 
     function flushOnLeave(): void {
-        void flush({ keepalive: true });
+        void flushInternal({ keepalive: true });
     }
 
     function dispose(): void {
         isDisposed = true;
+        pendingFollowUp = undefined;
+        flushScheduled = false;
+        clearDebounceTimer();
         queue.splice(0, queue.length);
     }
 
-    function info(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
-        push(LogLevel.INFO, messageOrEntry, details);
-    }
-
-    function warn(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
-        push(LogLevel.WARN, messageOrEntry, details);
-    }
-
-    function error(messageOrEntry: string | LogWriteEntry<AnyLogFields>, details?: unknown): void {
-        push(LogLevel.ERROR, messageOrEntry, details);
-    }
-
-    const logger: RuntimeLogger<AnyLogFields> = {
-        info: info as LogMethod<AnyLogFields>,
-        warn: warn as LogMethod<AnyLogFields>,
-        error: error as LogMethod<AnyLogFields>,
-        flush,
+    return {
+        enqueue,
+        flush: flushInternal,
         flushOnLeave,
         dispose,
     };
-
-    return logger;
 }

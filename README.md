@@ -1,362 +1,166 @@
 # @budarin/browser-log-runtime-core
 
-Небольшое browser-runtime ядро для:
+Небольшая библиотека для **буферного журнала** в памяти: вы задаёте тип записи `T`, функцию **`flush`**, лимиты очереди и размер пачки. Записи складываются в очередь, с головы отдаются в `flush` пачками; успех или ошибка определяется **только** возвращаемым значением `flush` — `Promise<boolean>`.
 
-- буферизации логов в памяти;
-- отправки логов батчами через пользовательский transport;
-- подписки на глобальные ошибки (`error`, `unhandledrejection`);
-- flush очереди на `pagehide` (в том числе с `keepalive`).
+Пакет **не** реализует HTTP, RPC, сериализацию под ваш сервер и **не** вешает глобальные обработчики ошибок. Работает везде, где есть `setTimeout`, `queueMicrotask` и промисы (Node, браузер и т.д.).
 
-Пакет не зависит от React, Vite и DI приложения.
+---
 
-## Установка
+## Что поставляется
+
+| Entry | Содержимое |
+| --- | --- |
+| `@budarin/browser-log-runtime-core` | `createBufferedLogger`, типы, константа **`DEFAULT_DEBOUNCE_MS`** |
+| `@budarin/browser-log-runtime-core/browser` | **`attachPagehideFlush`** — только `pagehide`, без подписок на ошибки |
+
+---
+
+## Установка и импорт
 
 ```bash
 pnpm add @budarin/browser-log-runtime-core
 ```
 
-## Root runtime API
-
-Основной entrypoint `@budarin/browser-log-runtime-core` остаётся совместимым и экспортирует:
-
 ```ts
 import {
-    attachGlobalErrorHooks,
-    attachPagehideFlush,
     createBufferedLogger,
-    normalizeDetails,
-    normalizeMessage,
-    serializeUnknown,
+    DEFAULT_DEBOUNCE_MS,
 } from '@budarin/browser-log-runtime-core';
 ```
 
-## Inline runtime
+---
 
-Для inline runtime-сценариев (splash/update-host) используйте отдельный entrypoint:
+## Значения по умолчанию
 
-```ts
-import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
-```
+Если в опциях что-то не указано, используются такие числа:
 
-Этот entrypoint не реэкспортирует root helpers, но теперь поддерживает ту же generic-модель shape лог-записи,
-что и root runtime API.
+| Параметр | По умолчанию |
+| --- | --- |
+| `batchSize` | `32` |
+| `maxQueueSize` | `1000` |
+| `debounceMs` | **`DEFAULT_DEBOUNCE_MS` (сейчас `50`)** — не ноль: после серии `enqueue` авто-сброс ждёт столько миллисекунд тишины |
 
-### API `createInlineLogger(options)`
+Чтобы **не** ждать таймер и гнать сброс почти сразу после текущего синхронного кода, передайте **`debounceMs: 0`**: тогда авто-сброс ставится на **следующий microtask** (несколько `enqueue` в одном синхронном участке обычно сливаются в один вызов `flush`).
 
-`options`:
+---
 
-- `send(entries, keepalive): Promise<boolean>`
-- `enableLogging?: boolean` (default `false`)
-- `appVersion?: string`
-- `batchSize?: number` (default `32`)
-- `maxQueueSize?: number` (default `1000`)
+## Как это работает
 
-Возвращаемый logger:
+### Очередь
 
-- если у logger нет обязательных extra fields:
-  - `info(message?, details?)`
-  - `warn(message?, details?)`
-  - `error(message?, details?)`
-- object-вызов всегда доступен:
-  - `info({ message, details?, ...extraFields })`
-  - `warn({ message, details?, ...extraFields })`
-  - `error({ message, details?, ...extraFields })`
-- если у logger есть обязательные extra fields, shorthand-вызов по строке запрещён типами
-- `flush(keepalive?: boolean)`
-- `flushOnLeave()`
-- `attachGlobalErrorHandlers({ onError?, onUnhandledRejection? }) -> detach`
-- `attachPagehideFlush() -> detach`
-- `dispose()`
+- **`enqueue(entry)`** — в конец очереди; если длина стала больше `maxQueueSize`, с **начала** удаляются самые старые записи, пока длина не станет допустимой.
 
-### Поведение inline logger
+### Когда после `enqueue` вообще вызовется `flush`
 
-- `info` включен только когда `enableLogging === true`;
-- queue хранит точный `InlineLogEntry<TFields>` shape конкретного logger instance;
-- `send` получает тот же точный shape без optionalization обязательных полей;
-- `details` нормализуется в `args` без потери JSON-совместимой структуры: plain object / array доезжают как объект / массив, а не как `"[object Object]"`;
-- для `bigint` используется строковое представление, для `Error` — объект `{ name, message, stack? }`;
-- если значение не удаётся честно привести к JSON-совместимой структуре, используется безопасный fallback без падения logger;
-- очередь ограничивается `maxQueueSize` (удаляются самые старые записи);
-- `flush` отправляет батчи в цикле до первой неуспешной отправки;
-- `flushOnLeave` вызывает отправку с `keepalive = true`;
-- `attach`/`detach`/`dispose` безопасны и идемпотентны.
+Пока **не** идёт уже активный сброс:
 
-## Основные типы
+1. **Если `debounceMs > 0`** (в том числе значение по умолчанию **50**): на каждый `enqueue` сбрасывается предыдущий таймер и заводится новый. **`flush`** вызывается только когда с момента **последнего** `enqueue` прошло `debounceMs` миллисекунд без новых записей. Это обычный **trailing debounce**: при частом потоке событий не дергают сеть на каждую строку, а ждут короткой паузы.
 
-```ts
-export const LogLevel = {
-    INFO: 'info',
-    WARN: 'warn',
-    ERROR: 'error',
-} as const;
-export type LogLevel = (typeof LogLevel)[keyof typeof LogLevel];
+2. **Если вы явно передали `debounceMs: 0`**: таймера нет — один запланированный сброс на **следующий microtask**. Записи, добавленные подряд в одном синхронном блоке, чаще всего попадут в **один** проход `flush`.
 
-export type BaseLogEntry = {
-    readonly args: readonly unknown[];
-    readonly level: LogLevel;
-    readonly message: string;
-    readonly timestampMs: number;
-    readonly appVersion?: string;
-};
+Если сброс **уже выполняется**, новый план из `enqueue` не создаётся: хвост очереди подхватывается текущим проходом.
 
-export type EmptyLogFields = Record<never, never>;
+### Один «проход» сброса
 
-export type LogEntry<TFields extends object = EmptyLogFields> = BaseLogEntry & TFields;
+Пока очередь не пуста:
 
-export type LogWriteEntry<TFields extends object = EmptyLogFields> = TFields & {
-    readonly details?: unknown;
-    readonly message: string;
-};
+1. Берётся срез с головы не больше **`batchSize`** элементов.
+2. Вызывается **`await flush(batch, options)`**. В `options`, например, может быть `{ keepalive: true }`, если сброс пришёл из **`flushOnLeave()`** (или из **`flush({ keepalive: true })`**).
+3. Если **`flush` вернул строго `true`**: эти элементы снимаются с головы очереди; если очередь ещё не пуста — в **том же** проходе берётся следующая пачка (то есть за один заход можно отправить много пачек подряд).
+4. Если вернулось **`false`** или не `true`: проход **останавливается**, пачка **остаётся**. Ядро **само** не повторяет вызов `flush` для этой пачки. Следующая попытка — когда снова сработает авто-сброс (debounce / microtask) или вы вызовете **`flush`** сами.
 
-export type LogTransport<TFields extends object = EmptyLogFields> = (
-    entries: readonly LogEntry<TFields>[],
-    keepalive: boolean
-) => Promise<boolean>;
+### Явный `flush` и `flushOnLeave`
 
-export type LoggerPolicy = {
-    readonly enableLogging?: boolean;
-    readonly appVersion?: string;
-    readonly batchSize?: number;
-    readonly maxQueueSize?: number;
-};
+- **`flush(options?)`** — тот же проход сброса; в начале **отменяется** отложенный таймер debounce, чтобы не получить двойную отправку «таймер + рука».
+- **`flushOnLeave()`** — то же, что **`flush({ keepalive: true })`**. Смысл `keepalive` определяете вы внутри своего `flush` (часто для last-chance запроса в браузере).
 
-export type RuntimeLogger<TFields extends object = EmptyLogFields> = {
-    info: LogMethod<TFields>;
-    warn: LogMethod<TFields>;
-    error: LogMethod<TFields>;
-    flush: (options?: { readonly keepalive?: boolean }) => Promise<void>;
-    flushOnLeave: () => void;
-    dispose: () => void;
-};
+### Параллельный `flush`
 
-export type GlobalErrorPayload = {
-    readonly message: string;
-    readonly raw: unknown;
-    readonly stack?: string;
-};
-```
+Если `flush` вызвали, пока уже идёт сброс, опции накапливаются: если хоть раз передали `keepalive: true`, это сохранится. После завершения текущего прохода, если очередь ещё не пуста и был отложенный запрос, выполняется ещё один проход с объединёнными опциями.
 
-## Контракт `createBufferedLogger` (root)
+### `dispose()`
 
-`createBufferedLogger` больше не фиксирует финальный shape лог-записи только через базовый `LogEntry`.
-Базовый контракт остаётся минимальным, а приложение может типобезопасно расширить запись своими top-level полями.
+Логгер выключается: новые `enqueue` игнорируются, очередь очищается, таймер debounce снимается. Уже запущенный у вас асинхронный код внутри `flush` может ещё отработать — это граница вашего кода.
 
-### `transport(entries, keepalive)`
+---
 
-- `entries` — текущий батч логов;
-- `entries` типизируются как `readonly LogEntry<TFields>[]`, поэтому transport получает ровно тот же shape, что и конкретный logger instance;
-- `keepalive` — признак flush при уходе со страницы;
-- вернуть `true`, если батч успешно отправлен и его можно удалить из очереди;
-- вернуть `false`, если отправка неуспешна (батч останется в очереди).
+## Опции `createBufferedLogger<T>(options)`
 
-### `policy`
+| Поле | Обязательное | Описание |
+| --- | --- | --- |
+| `flush` | да | `(batch: readonly T[], options?: { keepalive?: boolean }) => Promise<boolean>` |
+| `batchSize` | нет | размер пачки (по умолчанию `32`) |
+| `maxQueueSize` | нет | лимит длины очереди (по умолчанию `1000`) |
+| `debounceMs` | нет | тишина в мс перед авто-`flush` после `enqueue`; по умолчанию **`DEFAULT_DEBOUNCE_MS`**; **`0`** — режим microtask |
 
-- `enableLogging` — включать ли `info` логи (`false` по умолчанию)
-- `appVersion` — если непустая строка, добавляется в каждую запись как часть базового контракта
-- `batchSize` — размер батча, по умолчанию `32`
-- `maxQueueSize` — лимит очереди, по умолчанию `1000`
+### Методы возвращаемого логгера
 
-### Поведение `RuntimeLogger`
+`enqueue`, `flush`, `flushOnLeave`, `dispose`.
 
-- если у logger нет обязательных extra fields, `info/warn/error` по-прежнему поддерживают старый вызов `logger.warn(message, details)`;
-- если у logger есть обязательные extra fields, запись принимается только в форме `logger.warn({ message, details, ...extraFields })`;
-- object-вызов `logger.warn({ message, details, ...extraFields })` работает в обоих сценариях;
-- `details` нормализуется в `args` с сохранением JSON-совместимой структуры: plain object / array не превращаются в `"[object Object]"`;
-- `bigint` сериализуется в строку, `Error` — в объект `{ name, message, stack? }`, а для реально несериализуемых значений остаётся безопасный fallback;
-- `info` игнорируется, если `enableLogging !== true`;
-- при переполнении очередь обрезается до `maxQueueSize` (удаляются самые старые);
-- `flush()` отправляет накопленное через `transport`;
-- `flushOnLeave()` эквивалентен `flush({ keepalive: true })`;
-- `dispose()` очищает очередь и отключает логгер.
+---
 
-## Пример: базовый сценарий без расширений
+## `…/browser` — только уход со страницы
 
 ```ts
-import { createBufferedLogger } from '@budarin/browser-log-runtime-core';
+import { attachPagehideFlush } from '@budarin/browser-log-runtime-core/browser';
 
-const logger = createBufferedLogger(
-    async (entries, keepalive) => {
-        await fetch('/api/log', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            keepalive,
-            body: JSON.stringify({ entries }),
-        });
-
-        return true;
-    },
-    {
-        enableLogging: true,
-        appVersion: '1.0.0',
-    }
-);
-
-logger.info('runtime started', { route: '/' });
-```
-
-## Пример: расширенный shape лог-записи
-
-```ts
-import { createBufferedLogger, type LogEntry } from '@budarin/browser-log-runtime-core';
-
-type AppLogFields = {
-    readonly sessionId: string;
-};
-
-type AppLogEntry = LogEntry<AppLogFields>;
-
-const logger = createBufferedLogger<AppLogFields>(
-    async (entries: readonly AppLogEntry[], keepalive) => {
-        await fetch('/api/log', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            keepalive,
-            body: JSON.stringify({ entries }),
-        });
-
-        return true;
-    },
-    {
-        enableLogging: true,
-        appVersion: '1.0.0',
-    }
-);
-
-logger.warn({
-    message: 'request failed',
-    details: { status: 500 },
-    sessionId: 'session-42',
+const detach = attachPagehideFlush(() => {
+    void logger.flushOnLeave();
 });
+// …
+detach();
 ```
 
-В этом сценарии `sessionId`:
+Подписка на **`pagehide`** с `{ capture: true }`. Глобальные **`error` / `unhandledrejection`** не трогаются.
 
-- хранится в очереди вместе с базовыми полями;
-- не теряется при batching и retry;
-- доезжает до `transport` как часть `LogEntry<AppLogFields>`;
-- не является специальной сущностью пакета, а только примером расширения.
+---
 
-## Пример: обязательные и опциональные extra fields
+## Примеры
 
-```ts
-import { createBufferedLogger } from '@budarin/browser-log-runtime-core';
+### Обычный случай: дефолтный debounce (ничего не передаём)
 
-type RuntimeLogFields = {
-    readonly source: 'app' | 'serviceWorker';
-    readonly sessionId: string;
-    readonly traceId?: string;
-};
-
-const logger = createBufferedLogger<RuntimeLogFields>(
-    async (entries) => {
-        entries[0].source;
-        entries[0].sessionId;
-        entries[0].traceId;
-        return true;
-    },
-    {}
-);
-
-logger.error({
-    message: 'request failed',
-    source: 'app',
-    sessionId: 'session-42',
-});
-
-// TypeScript error: нельзя забыть обязательные поля.
-logger.error('request failed');
-```
-
-## Контракт `attachGlobalErrorHooks` (root)
-
-`attachGlobalErrorHooks(options)` подписывает глобальные события:
-
-- `window error` -> `options.onError(payload)`
-- `window unhandledrejection` -> `options.onUnhandledRejection(payload)`
-
-`payload` содержит:
-
-- `message` — нормализованное сообщение;
-- `raw` — исходный объект ошибки/reason;
-- `stack` — только если доступен.
-
-Функция возвращает `detach()`, который снимает обе подписки.
-
-## Контракт `attachPagehideFlush` (root)
-
-`attachPagehideFlush(flushOnLeave)`:
-
-- подписывает `pagehide` с `{ capture: true }`;
-- при событии вызывает `flushOnLeave`;
-- возвращает `detach()`.
-
-## Пример: inline-host (splash/update-host)
+Подходит, когда записи сыплются часто, а отправлять хочется пачками после короткой паузы:
 
 ```ts
-import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
+import { createBufferedLogger, DEFAULT_DEBOUNCE_MS } from '@budarin/browser-log-runtime-core';
 
-const logger = createInlineLogger({
-    send: async (entries, keepalive) => {
-        const response = await fetch('/api/log', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            keepalive,
-            body: JSON.stringify({
-                id: Date.now(),
-                method: 'log',
-                params: { entries },
-            }),
-        });
+type LogRow = { level: string; message: string; at: number };
 
-        return response.ok;
-    },
-    enableLogging: true,
-    appVersion: '1.0.0',
+const logger = createBufferedLogger<LogRow>({
     batchSize: 32,
     maxQueueSize: 1000,
+    // debounceMs не указан — будет DEFAULT_DEBOUNCE_MS (сейчас 50)
+    flush: async (batch, opts) => {
+        const res = await fetch('/api/logs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ events: batch }),
+            keepalive: opts?.keepalive === true,
+        });
+        return res.ok;
+    },
 });
 
-const detachPagehide = logger.attachPagehideFlush();
-const detachErrors = logger.attachGlobalErrorHandlers({
-    onError(payload) {
-        logger.error('[runtime] global error', payload);
-    },
-    onUnhandledRejection(payload) {
-        logger.error('[runtime] unhandled rejection', payload);
-    },
-});
-
-function teardownRuntime(): void {
-    detachErrors();
-    detachPagehide();
-    logger.dispose();
-}
+logger.enqueue({ level: 'info', message: 'готово', at: Date.now() });
+// через ~DEFAULT_DEBOUNCE_MS мс тишины без новых enqueue вызовется flush
 ```
 
-## Пример: inline logger с обязательными extra fields
+### Нужна минимальная задержка: `debounceMs: 0`
+
+Когда важно среагировать на следующий тик цикла событий без ожидания 50 мс:
 
 ```ts
-import { createInlineLogger } from '@budarin/browser-log-runtime-core/inline';
-
-type InlineRuntimeFields = {
-    readonly source: 'app' | 'serviceWorker';
-    readonly sessionId: string;
-};
-
-const logger = createInlineLogger<InlineRuntimeFields>({
-    send: async (entries) => {
-        entries[0].source;
-        entries[0].sessionId;
+const logger = createBufferedLogger({
+    debounceMs: 100,
+    flush: async (batch) => {
+        await someSink.write(batch);
         return true;
     },
 });
-
-logger.error({
-    message: 'runtime failed',
-    source: 'app',
-    sessionId: 'session-42',
-});
-
-// TypeScript error
-logger.error('runtime failed');
 ```
+
+---
+
+## Лицензия
+
+MIT
