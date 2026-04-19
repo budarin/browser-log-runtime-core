@@ -1,6 +1,6 @@
 {
     "name": "@budarin/browser-log-runtime-core",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "Reusable journal core: generic buffered queue, batching, and pluggable flush (optional DOM pagehide helper)",
     "type": "module",
     "main": "./dist/index.js",
